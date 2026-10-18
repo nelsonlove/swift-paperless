@@ -1,35 +1,15 @@
 // FileProviderExtension (app extension) — common settings shared by Debug and Release.
+// The settings every extension shares are in Shared/AppExtension.xcconfig.
 
-#include "../Shared/Version.xcconfig"
+#include "../Shared/AppExtension.xcconfig"
 
-PRODUCT_NAME = $(TARGET_NAME)
 PRODUCT_BUNDLE_IDENTIFIER = com.paulgessinger.swift-paperless.FileProviderExtension
 
-IPHONEOS_DEPLOYMENT_TARGET = 17.0
-TARGETED_DEVICE_FAMILY = 1,2
-SDKROOT = iphoneos
-SUPPORTED_PLATFORMS = iphoneos iphonesimulator
 // iOS only for now: whether macOS loads a File Provider extension embedded in a
 // Mac Catalyst app is unverified, so the Catalyst build does not embed it.
 SUPPORTS_MACCATALYST = NO
-SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO
-SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO
-SKIP_INSTALL = YES
 
 CODE_SIGN_ENTITLEMENTS = FileProviderExtension/FileProviderExtension.entitlements
-CODE_SIGN_IDENTITY = $(SWP_CODE_SIGN_IDENTITY)
-CODE_SIGN_STYLE = $(SWP_CODE_SIGN_STYLE)
 PROVISIONING_PROFILE_SPECIFIER = $(SWP_FILE_PROVIDER_EXTENSION_PROVISIONING_PROFILE)
 
-ENABLE_APP_SANDBOX = YES
-ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES
-
-LOCALIZED_STRING_SWIFTUI_SUPPORT = NO
-SWIFT_EMIT_LOC_STRINGS = NO
-
-LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../../Frameworks
-
-GENERATE_INFOPLIST_FILE = YES
 INFOPLIST_FILE = FileProviderExtension/Info.plist
-INFOPLIST_KEY_CFBundleDisplayName = Paperless
-INFOPLIST_KEY_NSHumanReadableCopyright =
