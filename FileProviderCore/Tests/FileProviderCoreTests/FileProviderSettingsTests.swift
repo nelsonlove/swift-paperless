@@ -61,7 +61,7 @@ struct FileProviderSettingsTests {
     #expect(FileProviderSettings.decode(from: data) == stored)
   }
 
-  @Test("Browse folders decode per element; an array with no known element is the default")
+  @Test("Browse folders decode per element; only a missing key or a non-array is the default")
   func browseFoldersPerElement() throws {
     func decode(_ json: String) throws -> Set<BrowseFolder> {
       try JSONDecoder().decode(FileProviderSettings.self, from: Data(json.utf8)).browseFolders
@@ -71,9 +71,10 @@ struct FileProviderSettingsTests {
         .tag, .documentType,
       ])
     #expect(try decode(#"{"browseFolders":[]}"#) == [])
-    // An array with elements but none that decodes is the default, all on.
-    #expect(try decode(#"{"browseFolders":[1,2]}"#) == Set(BrowseFolder.allCases))
-    #expect(try decode(#"{"browseFolders":["shelf",null]}"#) == Set(BrowseFolder.allCases))
+    // An array with elements but none known is the empty set, like []: an
+    // unknown newer value must not turn on folders the writer turned off.
+    #expect(try decode(#"{"browseFolders":[1,2]}"#) == [])
+    #expect(try decode(#"{"browseFolders":["shelf",null]}"#) == [])
     #expect(try decode(#"{"browseFolders":"tag"}"#) == Set(BrowseFolder.allCases))
     #expect(try decode(#"{"browseFolders":null}"#) == Set(BrowseFolder.allCases))
     #expect(try decode(#"{}"#) == Set(BrowseFolder.allCases))
