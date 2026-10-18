@@ -47,6 +47,7 @@ CHANGELOG="$TOOL_ROOT/scripts/changelog.py"
 APPSTORE_PROFILE_NAMES=(
   "swift-paperless AppStore CI"
   "swift-paperless ShareExtension AppStore CI"
+  "swift-paperless FileProviderExtension AppStore CI"
 )
 
 upload=1

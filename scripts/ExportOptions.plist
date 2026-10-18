@@ -31,6 +31,8 @@
     <string>swift-paperless AppStore CI</string>
     <key>com.paulgessinger.swift-paperless.ShareExtension</key>
     <string>swift-paperless ShareExtension AppStore CI</string>
+    <key>com.paulgessinger.swift-paperless.FileProviderExtension</key>
+    <string>swift-paperless FileProviderExtension AppStore CI</string>
   </dict>
 
   <!-- The build number is the source of truth in Version.xcconfig; never let

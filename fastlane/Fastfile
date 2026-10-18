@@ -80,7 +80,8 @@ platform :ios do
       type: "appstore",
       app_identifier: [
         "com.paulgessinger.swift-paperless",
-        "com.paulgessinger.swift-paperless.ShareExtension"
+        "com.paulgessinger.swift-paperless.ShareExtension",
+        "com.paulgessinger.swift-paperless.FileProviderExtension"
       ],
       readonly: is_ci
     )
@@ -118,6 +119,16 @@ Redact screenshots to not include information that you do not wish to expose.
       sdk: "iphoneos*",
       targets: ["ShareExtension"],
       profile_name: "match Development com.paulgessinger.swift-paperless.ShareExtension",
+    )
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: "swift-paperless.xcodeproj",
+      team_id: "ZHKJ4NHK6F",
+      code_sign_identity: "iPhone Developer",
+      sdk: "iphoneos*",
+      targets: ["FileProviderExtension"],
+      profile_name: "match Development com.paulgessinger.swift-paperless.FileProviderExtension",
     )
 
     version = read_version_setting("MARKETING_VERSION")

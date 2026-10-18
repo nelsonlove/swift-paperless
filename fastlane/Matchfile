@@ -4,4 +4,4 @@ storage_mode("git")
 
 type("appstore")
 
-app_identifier(["com.paulgessinger.swift-paperless", "com.paulgessinger.swift-paperless.ShareExtension"])
+app_identifier(["com.paulgessinger.swift-paperless", "com.paulgessinger.swift-paperless.ShareExtension", "com.paulgessinger.swift-paperless.FileProviderExtension"])
