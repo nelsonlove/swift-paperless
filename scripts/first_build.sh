@@ -11,6 +11,11 @@
 #     output-dir      where the result bundle and the attachments go
 #                     (default: build/first-build)
 #
+# The simulator must be an iPhone (the test assumes the iPhone layout of
+# Files) and Files must run in English: the test looks up English labels.
+# It passes -AppleLanguages (en) to both apps, which Files may ignore, so set
+# the simulator's language to English too.
+#
 # Environment:
 #   DERIVED_DATA      derived data folder (default: build/DerivedData)
 #   PACKAGES_DIR      cloned package folder; when set, package resolution is
@@ -50,6 +55,18 @@ rm -rf "$result" "$out/attachments"
 
 xcodegen generate
 
+# The test assumes the iPhone layout of Files.
+xcrun simctl list devices -j | python3 -c '
+import json, sys
+udid = sys.argv[1]
+for devices in json.load(sys.stdin)["devices"].values():
+    for d in devices:
+        if d["udid"] == udid:
+            kind = d.get("deviceTypeIdentifier", "") or d.get("name", "")
+            sys.exit(0 if "iPhone" in kind else "error: " + udid + " is not an iPhone (" + kind + ")")
+sys.exit("error: no simulator " + udid)
+' "$udid"
+
 xcrun simctl bootstatus "$udid" -b
 
 # Start from a clean install: uninstalling removes the app's File Provider
@@ -74,12 +91,12 @@ xcodebuild test \
 # Export the attachments whether the test passed or failed: a failure's
 # screenshots and element tree are what tell why. Best effort: an export
 # problem is reported and never replaces the test's exit status.
-if [[ -d "$result" ]]; then
-  {
-    xcrun xcresulttool export attachments --path "$result" --output-path "$out/attachments"
-    # The exported files are named by UUID; give them the names the test chose
-    # (manifest.json's suggestedHumanReadableName) and print their paths.
-    python3 - "$out/attachments" <<'PY'
+export_attachments() {
+  xcrun xcresulttool export attachments --path "$result" --output-path "$out/attachments" \
+    || { echo "warning: xcresulttool export failed; skipping the rename" >&2; return 1; }
+  # The exported files are named by UUID; give them the names the test chose
+  # (manifest.json's suggestedHumanReadableName) and print their paths.
+  python3 - "$out/attachments" <<'PY'
 import json, os, sys
 folder = sys.argv[1]
 with open(os.path.join(folder, "manifest.json")) as f:
@@ -97,9 +114,13 @@ for test in manifest:
             target = os.path.join(folder, f"{stem}-{n}{ext}")
         if os.path.exists(source) and source != target:
             os.rename(source, target)
-        print(target)
+        if os.path.exists(target):
+            print(target)
 PY
-  } || echo "warning: exporting the attachments failed; the result bundle is at $result" >&2
+}
+
+if [[ -d "$result" ]]; then
+  export_attachments || echo "warning: attachments not exported; the result bundle is at $result" >&2
 fi
 
 exit "$status"
