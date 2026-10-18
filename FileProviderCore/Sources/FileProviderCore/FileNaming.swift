@@ -18,10 +18,17 @@ public enum FileNaming {
   /// The extension used for archived documents and as the fallback.
   public static let pdfExtension = "pdf"
 
+  /// U+200C ZERO WIDTH NON-JOINER and U+200D ZERO WIDTH JOINER: format
+  /// characters that are part of emoji sequences and of words in Persian and
+  /// Indic scripts, so ``sanitize(_:)`` keeps them.
+  private static let joiners: Set<Unicode.Scalar> = ["\u{200C}", "\u{200D}"]
+
   /// Makes a string safe to use as one path component.
   ///
   /// Replaces `/` and `:` with `-`, replaces control characters and line or
-  /// paragraph separators with a space, collapses runs of whitespace, applies
+  /// paragraph separators with a space, drops Unicode format characters
+  /// (except the zero-width joiner and non-joiner, which emoji sequences and
+  /// several scripts need), collapses runs of whitespace, applies
   /// Unicode NFC, trims whitespace and leading dots (a leading dot hides the
   /// file), and caps the length at ``maxStemBytes``. Returns `nil` when nothing
   /// is left.
@@ -37,6 +44,10 @@ public enum FileNaming {
         switch scalar.properties.generalCategory {
         case .control, .lineSeparator, .paragraphSeparator:
           replacement = " "
+        case .format where !joiners.contains(scalar):
+          // Invisible format characters (bidi overrides such as U+202E, U+200B,
+          // U+FEFF) can disguise a name, so they are dropped.
+          continue
         default:
           replacement = scalar.properties.isWhitespace ? " " : scalar
         }

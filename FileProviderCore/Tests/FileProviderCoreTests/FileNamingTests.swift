@@ -20,6 +20,15 @@ struct FileNamingTests {
     #expect(FileNaming.sanitize("a\u{2028}b") == "a b")
   }
 
+  @Test("Format characters such as a right-to-left override are dropped")
+  func formatCharacters() {
+    #expect(FileNaming.sanitize("Invoice\u{202E}fdp.exe") == "Invoicefdp.exe")
+    #expect(FileNaming.sanitize("\u{FEFF}Bill\u{200B} 2026") == "Bill 2026")
+    #expect(FileNaming.sanitize("\u{202E}\u{200B}") == nil)
+    // The zero-width joiner in an emoji sequence is kept.
+    #expect(FileNaming.sanitize("Family 👨\u{200D}👩\u{200D}👧") == "Family 👨\u{200D}👩\u{200D}👧")
+  }
+
   @Test("Whitespace is trimmed and collapsed; leading dots are removed")
   func trimming() {
     #expect(FileNaming.sanitize("  Water   bill  ") == "Water bill")
