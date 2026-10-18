@@ -5,6 +5,7 @@
 
 import Common
 import FileProvider
+import FileProviderCore
 import Foundation
 import Networking
 
@@ -15,47 +16,52 @@ import Networking
 /// domains: NSCocoaErrorDomain, NSFileProviderErrorDomain"; one that fits
 /// neither is an NSCocoaErrorDomain NSXPCConnectionReplyInvalid with the
 /// original under NSUnderlyingErrorKey. The same section names
-/// NSFileProviderErrorNoSuchItem for an item deleted on the server (which a
-/// 404 alone does not show, so this map never gives it; `fetchContents` gives
-/// it after the database confirms the document is gone),
 /// NSFileReadNoPermissionError for content the user may not read, and
 /// NSFileProviderErrorNotAuthenticated and NSFileProviderErrorServerUnreachable
 /// for "the current state of the system / domain"; the Cancellations section
-/// (lines 396-400) asks for NSUserCancelledError.
+/// (lines 396-400) asks for NSUserCancelledError. This map never gives
+/// NSFileProviderErrorNoSuchItem, which makes the system delete the item
+/// (line 371): a 404 is not proof a document is gone, and deletions reach
+/// Files only through the working-set change diff over the database. The
+/// choice per kind of failure is FileProviderCore's `ErrorAnswer`.
 enum FileProviderErrors {
   static func map(_ error: any Error) -> NSError {
     let nsError = error as NSError
-    if nsError.domain == NSFileProviderErrorDomain || nsError.domain == NSCocoaErrorDomain {
+    if nsError.domain == NSFileProviderErrorDomain {
+      // Passed through, except a deletion: no error that reaches this map
+      // shows that an item is gone.
+      return nsError.code == NSFileProviderError.Code.noSuchItem.rawValue
+        ? NSFileProviderError(.serverUnreachable) as NSError : nsError
+    }
+    if nsError.domain == NSCocoaErrorDomain {
       return nsError
     }
-    if error is LibraryUnavailable {
-      // The library cannot be read: "the current state of the system /
-      // domain" (each method's "Error cases"), so the system backs off and
-      // keeps its items. Never noSuchItem.
+    switch ErrorAnswer.answer(for: kind(of: error)) {
+    case .serverUnreachable:
       return NSFileProviderError(.serverUnreachable) as NSError
-    }
-    if error.isCancellationError {
+    case .notAuthenticated:
+      return NSFileProviderError(.notAuthenticated) as NSError
+    case .noPermission:
+      return CocoaError(.fileReadNoPermission) as NSError
+    case .cancelled:
       return CocoaError(.userCancelled) as NSError
+    case .unrepresentable:
+      return NSError(
+        domain: NSCocoaErrorDomain, code: NSXPCConnectionReplyInvalid,
+        userInfo: [NSUnderlyingErrorKey: nsError])
     }
-    if let request = error as? RequestError {
-      switch request {
-      case .unauthorized:
-        return NSFileProviderError(.notAuthenticated) as NSError
-      case .forbidden:
-        return CocoaError(.fileReadNoPermission) as NSError
-      case .unexpectedStatusCode(let code, _) where code == .notFound:
-        // Not noSuchItem, which makes the system delete the item while the
-        // database may still hold it; "the current state of the system /
-        // domain" (fetchContents "Error cases", line 382), so it backs off.
-        return NSFileProviderError(.serverUnreachable) as NSError
-      case .connectivity, .localNetworkDenied, .certificate:
-        return NSFileProviderError(.serverUnreachable) as NSError
-      default:
-        break
-      }
+  }
+
+  private static func kind(of error: any Error) -> ErrorAnswer.Kind {
+    if error is LibraryUnavailable { return .libraryUnavailable }
+    if error.isCancellationError { return .cancelled }
+    guard let request = error as? RequestError else { return .other }
+    switch request {
+    case .unauthorized: return .unauthorized
+    case .forbidden: return .forbidden
+    case .unexpectedStatusCode(let code, _) where code == .notFound: return .notFound
+    case .connectivity, .localNetworkDenied, .certificate: return .unreachable
+    default: return .other
     }
-    return NSError(
-      domain: NSCocoaErrorDomain, code: NSXPCConnectionReplyInvalid,
-      userInfo: [NSUnderlyingErrorKey: nsError])
   }
 }

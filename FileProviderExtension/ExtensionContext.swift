@@ -296,26 +296,6 @@ final class ExtensionContext {
       .prepareRepository(for: server.stored)
   }
 
-  /// Whether the database, read now, still holds document `id`: a download
-  /// 404 for a document it no longer holds means the document is gone. Call
-  /// it inside ``work(_:)``.
-  ///
-  /// - Throws: ``LibraryUnavailable`` when the row cannot be read; that is no
-  ///   confirmation either way.
-  func documentInDatabase(_ id: UInt) async throws -> Bool {
-    guard let stack, let serverID else {
-      throw LibraryUnavailable(description: "no on-disk database")
-    }
-    do {
-      return try await stack.database.document(serverID: serverID, id: id) != nil
-    } catch let error where error.isCancellationError {
-      throw error
-    } catch {
-      Self.logger.error("File Provider: reading document \(id, privacy: .public) failed: \(error)")
-      throw LibraryUnavailable(description: "reading the document failed: \(error)")
-    }
-  }
-
   /// The stored copy of `document`'s content, if the content store has one,
   /// and whether the index says it is current for the document's `modified`.
   /// No network and no repository. Call it inside ``work(_:)``.
