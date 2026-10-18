@@ -73,11 +73,28 @@ xcrun simctl bootstatus "$udid" -b
 # domains, so Files enumerates the location afresh instead of showing what an
 # earlier build left in its cache.
 # The bundle id comes from the build settings (Config/Shared/Identity.xcconfig,
-# or a developer's Local.xcconfig), not a literal.
-app_id="$(xcodebuild -showBuildSettings -project swift-paperless.xcodeproj \
-  -target swift-paperless -configuration Debug -sdk iphonesimulator 2>/dev/null \
-  | awk -F' = ' '/^ +PRODUCT_BUNDLE_IDENTIFIER = / { print $2; exit }')"
-[[ -n "$app_id" ]] || { echo "error: no PRODUCT_BUNDLE_IDENTIFIER for swift-paperless" >&2; exit 1; }
+# or a developer's Local.xcconfig), not a literal. The whole output is read
+# before it is parsed, and xcodebuild's errors stay on stderr.
+if ! settings="$(xcodebuild -showBuildSettings \
+  -project swift-paperless.xcodeproj \
+  -scheme swift-paperless \
+  -configuration Debug \
+  -destination "platform=iOS Simulator,id=$udid" \
+  -scmProvider system \
+  ${packages[@]+"${packages[@]}"} \
+  -derivedDataPath "$derived")"; then
+  echo "error: xcodebuild -showBuildSettings failed; cannot read the app's bundle id" >&2
+  exit 1
+fi
+app_id="$(awk '
+  /^Build settings for action .* and target / { here = ($NF == "swift-paperless:"); next }
+  here && $1 == "PRODUCT_BUNDLE_IDENTIFIER" && $2 == "=" { print $3; exit }
+' <<<"$settings")"
+if [[ -z "$app_id" ]]; then
+  echo "error: xcodebuild -showBuildSettings printed no PRODUCT_BUNDLE_IDENTIFIER for swift-paperless" >&2
+  exit 1
+fi
+echo "App bundle id: $app_id"
 xcrun simctl uninstall "$udid" "$app_id" || true
 
 xcodebuild test \
