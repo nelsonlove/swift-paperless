@@ -115,15 +115,30 @@ public struct LibraryTree: Sendable {
       tags: tags, correspondents: correspondents, documentTypes: documentTypes,
       settings: settings, labels: labels)
 
-    // Sorted by id, and the first copy of a duplicated id wins, so the result
+    // A duplicated id keeps one copy, chosen by `isPreferred`, so the result
     // does not depend on input order.
-    for document in documents.sorted(by: { $0.id < $1.id })
-    where documentsByID[document.id] == nil {
+    for document in documents {
+      if let kept = documentsByID[document.id], !LibraryTree.isPreferred(document, over: kept) {
+        continue
+      }
       documentsByID[document.id] = document
-      builder.add(document)
+    }
+    for id in documentsByID.keys.sorted() {
+      builder.add(documentsByID[id]!)
     }
 
     (items, childIDs) = builder.finish()
+  }
+
+  /// Which of two copies of one document id to keep: the later `modified`
+  /// (none counts as oldest), then the greater title, then the greater full
+  /// description, which is a total order over the values that build the tree.
+  static func isPreferred(_ candidate: Document, over kept: Document) -> Bool {
+    let candidateModified = candidate.modified ?? .distantPast
+    let keptModified = kept.modified ?? .distantPast
+    if candidateModified != keptModified { return candidateModified > keptModified }
+    if candidate.title != kept.title { return candidate.title > kept.title }
+    return String(describing: candidate) > String(describing: kept)
   }
 
   /// The year of a document's `created` date, independent of the current

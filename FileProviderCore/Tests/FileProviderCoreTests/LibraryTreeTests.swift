@@ -306,10 +306,22 @@ struct LibraryTreeTests {
     #expect(a.version == o.version)
   }
 
-  @Test("Duplicate documents in the input appear once")
+  @Test("A duplicated id keeps the latest modified copy, whatever the input order")
   func duplicateInput() {
-    let documents = [Fixtures.document(1, "One"), Fixtures.document(1, "One again")]
-    let tree = Fixtures.tree(settings(.flat), documents: documents)
-    #expect(tree.names(.root) == ["One.pdf"])
+    let older = Fixtures.document(1, "One", modified: Fixtures.date(2026, 1, 1))
+    let newer = Fixtures.document(1, "One revised", modified: Fixtures.date(2026, 3, 1))
+    var undated = Fixtures.document(1, "Zzz")
+    undated.modified = nil
+    for documents in [[older, newer, undated], [undated, newer, older], [newer, older]] {
+      let tree = Fixtures.tree(settings(.flat), documents: documents)
+      #expect(tree.names(.root) == ["One revised.pdf"])
+      #expect(tree.document(for: .document(1))?.title == "One revised")
+    }
+
+    // Same modified date: the tiebreak is the title, in either order.
+    let a = Fixtures.document(2, "Alpha")
+    let b = Fixtures.document(2, "Beta")
+    #expect(Fixtures.tree(settings(.flat), documents: [a, b]).names(.root) == ["Beta.pdf"])
+    #expect(Fixtures.tree(settings(.flat), documents: [b, a]).names(.root) == ["Beta.pdf"])
   }
 }
