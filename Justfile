@@ -126,6 +126,11 @@ build os=default_os device=default_device: generate
   #!/usr/bin/env bash
   xcodebuild -scheme swift-paperless -project ./swift-paperless.xcodeproj -configuration Release -destination "platform=iOS Simulator,OS={{os}},name={{device}}" | xcbeautify
 
+# Generate, build and run the Files-app smoke test on a simulator, and export
+# its screenshots (scripts/first_build.sh). `just first-build udid=<UDID>`.
+first-build udid out='build/first-build':
+  scripts/first_build.sh {{udid}} {{out}}
+
 _test_swift package:
   swift test --package-path {{package}} --disable-keychain
 

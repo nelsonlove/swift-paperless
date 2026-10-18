@@ -25,6 +25,14 @@ set -euo pipefail
 udid="${1:?usage: scripts/first_build.sh <simulator-udid> [output-dir]}"
 out="${2:-build/first-build}"
 derived="${DERIVED_DATA:-build/DerivedData}"
+packages_dir="${PACKAGES_DIR:-}"
+
+# Absolute paths, resolved against the caller's working directory, before the
+# cd below.
+abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac; }
+out="$(abspath "$out")"
+derived="$(abspath "$derived")"
+[[ -n "$packages_dir" ]] && packages_dir="$(abspath "$packages_dir")"
 
 cd "$(dirname "$0")/.."
 
@@ -32,8 +40,8 @@ export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=
 
 packages=()
-if [[ -n "${PACKAGES_DIR:-}" ]]; then
-  packages=(-clonedSourcePackagesDirPath "$PACKAGES_DIR" -disableAutomaticPackageResolution)
+if [[ -n "$packages_dir" ]]; then
+  packages=(-clonedSourcePackagesDirPath "$packages_dir" -disableAutomaticPackageResolution)
 fi
 
 mkdir -p "$out"
@@ -64,12 +72,14 @@ xcodebuild test \
   && status=0 || status=$?
 
 # Export the attachments whether the test passed or failed: a failure's
-# screenshots and element tree are what tell why.
+# screenshots and element tree are what tell why. Best effort: an export
+# problem is reported and never replaces the test's exit status.
 if [[ -d "$result" ]]; then
-  xcrun xcresulttool export attachments --path "$result" --output-path "$out/attachments"
-  # The exported files are named by UUID; give them the names the test chose
-  # (manifest.json's suggestedHumanReadableName) and print their paths.
-  python3 - "$out/attachments" <<'PY'
+  {
+    xcrun xcresulttool export attachments --path "$result" --output-path "$out/attachments"
+    # The exported files are named by UUID; give them the names the test chose
+    # (manifest.json's suggestedHumanReadableName) and print their paths.
+    python3 - "$out/attachments" <<'PY'
 import json, os, sys
 folder = sys.argv[1]
 with open(os.path.join(folder, "manifest.json")) as f:
@@ -78,11 +88,18 @@ for test in manifest:
     for attachment in test.get("attachments", []):
         source = os.path.join(folder, attachment["exportedFileName"])
         name = attachment.get("suggestedHumanReadableName") or attachment["exportedFileName"]
-        target = os.path.join(folder, name.replace("/", "-"))
+        base = name.replace("/", "-")
+        target = os.path.join(folder, base)
+        stem, ext = os.path.splitext(base)
+        n = 1
+        while os.path.exists(target) and target != source:
+            n += 1
+            target = os.path.join(folder, f"{stem}-{n}{ext}")
         if os.path.exists(source) and source != target:
             os.rename(source, target)
-        print(os.path.abspath(target))
+        print(target)
 PY
+  } || echo "warning: exporting the attachments failed; the result bundle is at $result" >&2
 fi
 
 exit "$status"

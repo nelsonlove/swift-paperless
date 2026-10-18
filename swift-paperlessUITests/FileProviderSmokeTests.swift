@@ -26,7 +26,6 @@ final class FileProviderSmokeTests: XCTestCase {
   /// for an app with one domain), a correspondent folder of the default
   /// layout, and one of its documents.
   private let locationNames = ["Mock Paperless", "Paperless"]
-  private var locationName: String { locationNames[0] }
   private let correspondentFolder = "Acme Utilities"
   private let browseFolders = ["By tag", "By correspondent", "By type"]
   private let documentTitle = "Electricity bill March 2026"
@@ -37,17 +36,23 @@ final class FileProviderSmokeTests: XCTestCase {
     continueAfterFailure = false
   }
 
-  /// Fails the test unless `condition` holds, first attaching the Files app's
-  /// element tree and the screen, so a label that changed in a new iOS
+  /// Fails the test unless `condition` holds, first attaching the element tree
+  /// of the app the step is about and the screen, so a label that changed in a new iOS
   /// version can be read from the result bundle.
   private func require(
-    _ condition: Bool, _ message: String, file: StaticString = #filePath, line: UInt = #line
+    _ condition: Bool, _ message: String, app: XCUIApplication? = nil,
+    file: StaticString = #filePath, line: UInt = #line
   ) {
     guard !condition else { return }
-    let tree = XCTAttachment(string: files.debugDescription)
-    tree.name = "Files element tree at failure"
-    tree.lifetime = .keepAlways
-    add(tree)
+    // The tree of the app the step is about (Files unless told otherwise),
+    // and only if it runs: reading the tree of a stopped app fails.
+    let subject = app ?? files
+    if subject.state != .notRunning {
+      let tree = XCTAttachment(string: subject.debugDescription)
+      tree.name = "\(subject === paperless ? "Paperless" : "Files") element tree at failure"
+      tree.lifetime = .keepAlways
+      add(tree)
+    }
     let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
     screen.name = "Screen at failure"
     screen.lifetime = .keepAlways
@@ -61,9 +66,8 @@ final class FileProviderSmokeTests: XCTestCase {
     paperless.launch()
     let seeded = element(in: paperless, labelsStartingWith: [documentTitle])
     require(
-      seeded.waitForExistence(timeout: 60), "The seeded library did not appear in the app")
-    // The domain is added by the app's launch task; give it a moment.
-    sleep(3)
+      seeded.waitForExistence(timeout: 60), "The seeded library did not appear in the app",
+      app: paperless)
     snapshot(paperless, "app seeded")
 
     // 2. Files, Browse tab, at the top level.
@@ -79,12 +83,16 @@ final class FileProviderSmokeTests: XCTestCase {
     }
     snapshot(files, "browse")
 
-    // 3. Switch the location on if Files lists it as off.
+    // 3. Switch the location on if Files lists it as off. The app adds its
+    // domain from a launch task, so re-open the Locations list until the row
+    // appears (no fixed wait).
     let location = locationCell()
-    if !isVisible(location, timeout: 3) {
-      enableLocation()
+    if !waitForLocation(browse: browse, timeout: 20) {
+      enableLocation(browse: browse)
     }
-    require(location.waitForExistence(timeout: 15), "No \(locationName) location in Browse")
+    require(
+      waitForLocation(browse: browse, timeout: 15),
+      "No \(locationNames.joined(separator: " or ")) location in Browse")
     snapshot(files, "location listed")
 
     // 4. Open the location: the canonical folders and the browse folders.
@@ -97,11 +105,11 @@ final class FileProviderSmokeTests: XCTestCase {
     }
     let acme = element(in: files, labelsStartingWith: [correspondentFolder])
     require(
-      acme.waitForExistence(timeout: 60), "No \(correspondentFolder) folder in \(locationName)")
+      acme.waitForExistence(timeout: 60), "No \(correspondentFolder) folder in \(locationNames.joined(separator: " or "))")
     for name in browseFolders {
       require(
         element(in: files, labelsStartingWith: [name]).waitForExistence(timeout: 10),
-        "No \(name) folder in \(locationName)")
+        "No \(name) folder in \(locationNames.joined(separator: " or "))")
     }
     snapshot(files, "location opened")
 
@@ -113,8 +121,19 @@ final class FileProviderSmokeTests: XCTestCase {
     snapshot(files, "folder opened")
   }
 
+  /// Polls for the location's row, opening the top of Browse again on each
+  /// round so a domain added after Files started is picked up.
+  private func waitForLocation(browse: XCUIElement, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      if locationCell().waitForExistence(timeout: 2) { return true }
+      if browse.exists { browse.tap() }
+    } while Date() < deadline
+    return false
+  }
+
   /// Browse → "…" → Edit → the location's switch on → Done.
-  private func enableLocation() {
+  private func enableLocation(browse: XCUIElement) {
     let more = element(
       in: files, labels: ["More", "More options", "Show more", "ellipsis", "ellipsis.circle", "…"],
       types: [.button])
@@ -130,12 +149,16 @@ final class FileProviderSmokeTests: XCTestCase {
     // The switch is a sibling of the location's cell, not inside it (iOS
     // 26.5): take the switch on the cell's row.
     let row = locationCell()
-    require(row.waitForExistence(timeout: 10), "No \(locationName) row while editing")
+    require(
+      row.waitForExistence(timeout: 30),
+      "No \(locationNames.joined(separator: " or ")) row while editing")
     let rowFrame = row.frame
     let rowSwitch = files.switches.allElementsBoundByIndex.first {
-      $0.frame.midY >= rowFrame.minY && $0.frame.midY <= rowFrame.maxY
+      $0.isHittable && $0.frame.midY >= rowFrame.minY && $0.frame.midY <= rowFrame.maxY
     }
-    require(rowSwitch != nil, "No switch on the \(locationName) row")
+    require(
+      rowSwitch != nil,
+      "No hittable switch on the \(locationNames.joined(separator: " or ")) row")
     if let rowSwitch, (rowSwitch.value as? String) != "1" { rowSwitch.tap() }
     snapshot(files, "location switched on")
 
