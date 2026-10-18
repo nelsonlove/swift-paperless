@@ -21,9 +21,12 @@ final class FileProviderSmokeTests: XCTestCase {
   private let paperless = XCUIApplication()
   private let files = XCUIApplication(bundleIdentifier: "com.apple.DocumentsApp")
 
-  /// The made-up library of `MockLibrary`: the server's display name, a
-  /// correspondent folder of the default layout, and one of its documents.
-  private let locationName = "Mock Paperless"
+  /// The made-up library of `MockLibrary`: the location's names (the
+  /// domain's display name, or the app's name, which is what iOS 26.5 shows
+  /// for an app with one domain), a correspondent folder of the default
+  /// layout, and one of its documents.
+  private let locationNames = ["Mock Paperless", "Paperless"]
+  private var locationName: String { locationNames[0] }
   private let correspondentFolder = "Acme Utilities"
   private let browseFolders = ["By tag", "By correspondent", "By type"]
   private let documentTitle = "Electricity bill March 2026"
@@ -77,7 +80,7 @@ final class FileProviderSmokeTests: XCTestCase {
     snapshot(files, "browse")
 
     // 3. Switch the location on if Files lists it as off.
-    let location = element(in: files, labelsStartingWith: [locationName])
+    let location = locationCell()
     if !isVisible(location, timeout: 3) {
       enableLocation()
     }
@@ -118,23 +121,16 @@ final class FileProviderSmokeTests: XCTestCase {
     edit.tap()
     snapshot(files, "editing locations")
 
-    let toggle = files.switches.matching(
-      NSPredicate(
-        format: "label BEGINSWITH %@ OR identifier BEGINSWITH %@", locationName, locationName)
-    ).firstMatch
-    if toggle.waitForExistence(timeout: 10) {
-      if (toggle.value as? String) != "1" { toggle.tap() }
-    } else {
-      // A row whose switch carries no label: the switch inside the row with
-      // the location's name.
-      let row = files.cells.containing(
-        NSPredicate(format: "label BEGINSWITH %@", locationName)
-      ).firstMatch
-      require(row.waitForExistence(timeout: 10), "No \(locationName) row while editing")
-      let rowSwitch = row.switches.firstMatch
-      require(rowSwitch.exists, "No switch in the \(locationName) row")
-      if (rowSwitch.value as? String) != "1" { rowSwitch.tap() }
+    // The switch is a sibling of the location's cell, not inside it (iOS
+    // 26.5): take the switch on the cell's row.
+    let row = locationCell()
+    require(row.waitForExistence(timeout: 10), "No \(locationName) row while editing")
+    let rowFrame = row.frame
+    let rowSwitch = files.switches.allElementsBoundByIndex.first {
+      $0.frame.midY >= rowFrame.minY && $0.frame.midY <= rowFrame.maxY
     }
+    require(rowSwitch != nil, "No switch on the \(locationName) row")
+    if let rowSwitch, (rowSwitch.value as? String) != "1" { rowSwitch.tap() }
     snapshot(files, "location switched on")
 
     let done = element(in: files, labels: ["Done"], types: [.button])
@@ -143,6 +139,12 @@ final class FileProviderSmokeTests: XCTestCase {
   }
 
   // MARK: Helpers
+
+  /// The location's row in Browse, by any of its names. A cell, so the "◀
+  /// Paperless" button back to the app is never taken for it.
+  private func locationCell() -> XCUIElement {
+    files.cells.matching(NSPredicate(format: "label IN %@", locationNames)).firstMatch
+  }
 
   private func element(
     in app: XCUIApplication, labels: [String], types: [XCUIElement.ElementType] = []
