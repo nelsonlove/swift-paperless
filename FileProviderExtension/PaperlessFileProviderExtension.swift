@@ -13,8 +13,11 @@ import os
 /// is refused, so the target builds, embeds and loads before any library code
 /// lands. Read-only enforcement follows upstream issue #727 Stage 4: items
 /// carry no write capabilities, `createItem` fails with
-/// `.cannotSynchronize` (keeping the user's file), `modifyItem` reverts and
-/// `deleteItem` rejects the deletion.
+/// `.cannotSynchronize` (keeping the user's file), `modifyItem` reverts a
+/// known item and fails others with `.cannotSynchronize`, and `deleteItem`
+/// rejects deleting the root. Every error code is the one the SDK header
+/// (NSFileProviderReplicatedExtension.h, each method's "Error cases") names
+/// for the case; the comments quote it.
 ///
 /// `init(domain:)` is synchronous and nonisolated and stores only the domain.
 /// The database and repository stack is built lazily on the main actor when
@@ -45,6 +48,10 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     if identifier == .rootContainer {
       completionHandler(RootItem(), nil)
     } else {
+      // NSFileProviderReplicatedExtension.h, itemForIdentifier, "Error cases":
+      // "If the metadata lookup fails because the item is unknown, the call
+      // should fail with the NSFileProviderErrorNoSuchItem error." The root is
+      // the only item at this stage.
       completionHandler(nil, NSFileProviderError(.noSuchItem))
     }
     return Progress()
@@ -57,7 +64,16 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     switch containerItemIdentifier {
     case .rootContainer, .workingSet:
       return EmptyEnumerator()
+    case .trashContainer:
+      // NSFileProviderReplicatedExtension.h, enumeratorForContainerItemIdentifier,
+      // "Error cases": "If containerItemIdentifier is
+      // NSFileProviderTrashContainerItemIdentifier and the extension does not
+      // support trashing items, then it should fail the call with the
+      // NSFeatureUnsupportedError error code from the NSCocoaErrorDomain domain."
+      throw CocoaError(.featureUnsupported)
     default:
+      // Same section: an unknown container fails with
+      // NSFileProviderErrorNoSuchItem.
       throw NSFileProviderError(.noSuchItem)
     }
   }
@@ -68,7 +84,18 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     request: NSFileProviderRequest,
     completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
   ) -> Progress {
-    completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+    if itemIdentifier == .rootContainer {
+      // The root is a folder and has no contents to fetch. Not noSuchItem,
+      // which would make the system delete it; NSFileReadNoPermissionError is
+      // the error the fetchContents "Error cases" (NSFileProviderReplicatedExtension.h)
+      // name for content the user cannot read, and it is shown to the user.
+      completionHandler(nil, nil, CocoaError(.fileReadNoPermission))
+    } else {
+      // Same section: "If the download fails because the item was deleted on
+      // the server, the call should fail with the NSFileProviderErrorNoSuchItem
+      // error." Nothing but the root exists at this stage.
+      completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+    }
     return Progress()
   }
 
@@ -97,8 +124,13 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     return Progress()
   }
 
-  /// Returns the current item unchanged, so the system reverts the local edit.
-  /// The root is the only item at this stage; anything else is unknown.
+  /// Returns a known item unchanged, so the system reverts the local edit. The
+  /// root is the only item at this stage. For anything else, not noSuchItem:
+  /// the modifyItem "Error cases" (NSFileProviderReplicatedExtension.h) say
+  /// that makes "The system ... attempt to delete the item on disk". The same
+  /// section lists NSFileProviderErrorCannotSynchronize for a modification that
+  /// "cannot be applied because of the current state of the system / domain";
+  /// the system then shows an error and backs off.
   func modifyItem(
     _ item: NSFileProviderItem,
     baseVersion version: NSFileProviderItemVersion,
@@ -112,12 +144,18 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     if item.itemIdentifier == .rootContainer {
       completionHandler(RootItem(), [], false, nil)
     } else {
-      completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+      completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
     }
     return Progress()
   }
 
-  /// Rejects the deletion; the system recreates the item.
+  /// Rejects the deletion of the root; the deleteItem "Error cases"
+  /// (NSFileProviderReplicatedExtension.h) say NSFileProviderErrorDeletionRejected
+  /// "will cause the system to re-create the deleted item on disk". An unknown
+  /// item is reported deleted, as the same section asks: "If the deletion
+  /// targets an item that is unknown from the extension because that item may
+  /// have already been deleted remotely, then the extension should report a
+  /// success."
   func deleteItem(
     identifier: NSFileProviderItemIdentifier,
     baseVersion version: NSFileProviderItemVersion,
@@ -125,8 +163,12 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     request: NSFileProviderRequest,
     completionHandler: @escaping (Error?) -> Void
   ) -> Progress {
-    Self.logger.warning("Refused deleteItem: the File Provider is read-only")
-    completionHandler(NSFileProviderError(.deletionRejected))
+    if identifier == .rootContainer {
+      Self.logger.warning("Refused deleteItem: the File Provider is read-only")
+      completionHandler(NSFileProviderError(.deletionRejected))
+    } else {
+      completionHandler(nil)
+    }
     return Progress()
   }
 }
@@ -147,7 +189,9 @@ final class RootItem: NSObject, NSFileProviderItem {
 
 /// Enumerates nothing: the root and the working set are empty at this stage.
 final class EmptyEnumerator: NSObject, NSFileProviderEnumerator {
-  private static let anchor = NSFileProviderSyncAnchor(Data("0".utf8))
+  /// Versioned, so the next stage can recognise an anchor handed out by this
+  /// stub and answer it with `.syncAnchorExpired`, forcing a full enumeration.
+  static let anchor = NSFileProviderSyncAnchor(Data("stub-v1".utf8))
 
   func invalidate() {}
 
