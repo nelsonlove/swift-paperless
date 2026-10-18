@@ -200,16 +200,31 @@ public enum FileNaming {
   /// has a `-` where the other has a digit). At most `entries.count - 1`
   /// names are taken, so one of the first `entries.count` counters is free.
   public static func resolveCollisions(_ entries: [Entry]) -> [String] {
+    resolveCollisions(entries, keyOf: comparisonKey)
+  }
+
+  /// The implementation, with the comparison key injectable so tests can
+  /// count how often it runs: once per entry, and once more per name change.
+  static func resolveCollisions(_ entries: [Entry], keyOf: (String) -> String) -> [String] {
     var suffixes = [String](repeating: "", count: entries.count)
-    func name(_ index: Int) -> String {
-      compose(
+    func compose(_ index: Int) -> String {
+      FileNaming.compose(
         stem: entries[index].stem, suffix: suffixes[index],
         fileExtension: entries[index].fileExtension)
+    }
+    // Each name and its comparison key are computed once and recomputed only
+    // when the entry's suffix changes.
+    var names = entries.indices.map(compose)
+    var keys = names.map(keyOf)
+    func setSuffix(_ index: Int, _ suffix: String) {
+      suffixes[index] = suffix
+      names[index] = compose(index)
+      keys[index] = keyOf(names[index])
     }
     func collisionGroups() -> [[Int]] {
       var groups: [String: [Int]] = [:]
       for index in entries.indices {
-        groups[comparisonKey(name(index)), default: []].append(index)
+        groups[keys[index], default: []].append(index)
       }
       return groups.values.filter { $0.count > 1 }
     }
@@ -223,7 +238,7 @@ public enum FileNaming {
         let keepers = group.filter { entries[$0].keepsName && suffixes[$0].isEmpty }
         for index in group where suffixes[index].isEmpty {
           if keepers.count == 1, keepers[0] == index { continue }
-          suffixes[index] = " (#\(suffixToken(entries[index].disambiguator)))"
+          setSuffix(index, " (#\(suffixToken(entries[index].disambiguator)))")
           changed = true
         }
       }
@@ -231,12 +246,11 @@ public enum FileNaming {
 
     let remaining = collisionGroups().flatMap { $0 }
     if remaining.isEmpty {
-      return entries.indices.map(name)
+      return names
     }
 
     let remainingSet = Set(remaining)
-    var used = Set(
-      entries.indices.filter { !remainingSet.contains($0) }.map { comparisonKey(name($0)) })
+    var used = Set(entries.indices.filter { !remainingSet.contains($0) }.map { keys[$0] })
     let ordered = remaining.sorted { lhs, rhs in
       if entries[lhs].keepsName != entries[rhs].keepsName { return entries[lhs].keepsName }
       if entries[lhs].uniqueKey != entries[rhs].uniqueKey {
@@ -245,12 +259,12 @@ public enum FileNaming {
       return lhs < rhs
     }
     for index in ordered {
-      if used.insert(comparisonKey(name(index))).inserted { continue }
+      if used.insert(keys[index]).inserted { continue }
       let hash = stableHash(entries[index].uniqueKey)
       var settled = false
       for counter in 1...entries.count {
-        suffixes[index] = " (#\(hash)-\(counter))"
-        if used.insert(comparisonKey(name(index))).inserted {
+        setSuffix(index, " (#\(hash)-\(counter))")
+        if used.insert(keys[index]).inserted {
           settled = true
           break
         }
@@ -258,7 +272,7 @@ public enum FileNaming {
       // Unreachable by the argument in the doc comment.
       assert(settled, "no free name for \(entries[index].uniqueKey)")
     }
-    return entries.indices.map(name)
+    return names
   }
 
   /// The longest disambiguator text kept in a ` (#<disambiguator>)` suffix.
@@ -303,8 +317,10 @@ public enum FileNaming {
   /// The key two names are compared by: NFC, then case-folded.
   public static func comparisonKey(_ name: String) -> String {
     name.precomposedStringWithCanonicalMapping
-      .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+      .folding(options: [.caseInsensitive], locale: comparisonLocale)
   }
+
+  private static let comparisonLocale = Locale(identifier: "en_US_POSIX")
 
   private static func truncate(_ string: String, maxBytes: Int) -> String {
     guard string.utf8.count > maxBytes else { return string }

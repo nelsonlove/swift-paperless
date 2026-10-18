@@ -354,6 +354,10 @@ struct MainView: View {
 
       setupQuickActions()
 
+      #if DEBUG
+        await MockLibrarySeeder.seedIfRequested(stack: stack)
+      #endif
+
       Logger.shared.notice("Checking login status")
       await refreshConnection()
       initialDisplay = false

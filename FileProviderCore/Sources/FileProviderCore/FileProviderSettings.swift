@@ -60,8 +60,15 @@ public struct FileProviderSettings: Codable, Equatable, Hashable, Sendable {
     let layoutRaw = try? container.decodeIfPresent(String.self, forKey: .layout)
     layout = layoutRaw.flatMap(FolderLayout.init(rawValue:)) ?? defaults.layout
 
-    if let raws = try? container.decodeIfPresent([String].self, forKey: .browseFolders) {
-      browseFolders = Set(raws.compactMap(BrowseFolder.init(rawValue:)))
+    // Per element: an unknown or non-string element is dropped and the rest
+    // kept, so an array with no known element is the empty set, like `[]`:
+    // the writer turned every known folder off, and an unknown (newer) value
+    // must not turn them back on. Only a missing key or a value that is not
+    // an array gives the default.
+    if let elements = try? container.decodeIfPresent(
+      [LenientElement].self, forKey: .browseFolders)
+    {
+      browseFolders = Set(elements.compactMap { $0.value.flatMap(BrowseFolder.init(rawValue:)) })
     } else {
       browseFolders = defaults.browseFolders
     }
@@ -76,5 +83,16 @@ public struct FileProviderSettings: Codable, Equatable, Hashable, Sendable {
     // Sorted, so the encoded bytes are stable.
     try container.encode(browseFolders.sorted().map(\.rawValue), forKey: .browseFolders)
     try container.encode(content, forKey: .content)
+  }
+}
+
+/// One array element that always decodes: its string, or `nil` for anything
+/// else (a number, `null`, an object), so one bad element cannot fail the
+/// whole array.
+private struct LenientElement: Decodable {
+  let value: String?
+
+  init(from decoder: any Decoder) throws {
+    value = try? decoder.singleValueContainer().decode(String.self)
   }
 }

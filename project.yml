@@ -62,6 +62,15 @@ targets:
       # libraries.md is bundled as a resource but lives outside the app folder.
       - path: docs/libraries.md
         buildPhase: resources
+      # Debug only: the mock library seeder (`--seed-mock-library`) stores these
+      # as cached archives. App-Release.xcconfig excludes the folder from Release
+      # by path, and DEVELOPMENT_ASSET_PATHS keeps it out of archives.
+      - path: "Preview PDFs/invoice.pdf"
+        buildPhase: resources
+      - path: "Preview PDFs/japan.pdf"
+        buildPhase: resources
+      - path: "Preview PDFs/street.pdf"
+        buildPhase: resources
     dependencies:
       - target: ShareExtension
         embed: true

@@ -19,6 +19,17 @@ public enum FolderKey: Hashable, Sendable {
   /// `dir:correspondentYear:<id|none>/<year>` (a year inside it).
   case correspondentYear(correspondent: UInt?, year: Int?)
 
+  /// The text for a missing correspondent or document type, both in folder
+  /// identifiers (`dir:correspondent:none`) and in the tree's collision
+  /// suffixes and fallback names. The one spelling of it.
+  static let noneToken = "none"
+
+  /// An id as written in identifiers and suffixes: its decimal form, or
+  /// ``noneToken``.
+  static func token(for id: UInt?) -> String {
+    id.map { String($0) } ?? noneToken
+  }
+
   /// The layout this folder belongs to.
   public var layout: FolderLayout {
     switch self {
@@ -45,9 +56,14 @@ public enum FolderKey: Hashable, Sendable {
 /// - `tag:<id>/doc:<id>`, `corr:<id>/doc:<id>`, `type:<id>/doc:<id>`: secondary
 ///   appearances of a document
 ///
-/// `init?(rawValue:)` accepts exactly the strings `rawValue` produces (ids in
-/// canonical decimal form, no leading zeros or signs), so the round trip is
-/// lossless in both directions.
+/// `init?(stringValue:)` accepts exactly the strings `stringValue` produces
+/// (ids in canonical decimal form, no leading zeros or signs), so the round
+/// trip is lossless in both directions.
+///
+/// The type is deliberately not `RawRepresentable`: the standard library's
+/// `RawRepresentable` defaults would make `==` and `hash(into:)` build the
+/// string for every dictionary lookup. Equality and hashing are the
+/// synthesized ones, which switch on the cases and their payloads.
 public enum ItemIdentifier: Hashable, Sendable {
   case root
   case folder(FolderKey)
@@ -72,10 +88,10 @@ public enum ItemIdentifier: Hashable, Sendable {
   }
 }
 
-extension ItemIdentifier: RawRepresentable {
-  private static let noneKey = "none"
+extension ItemIdentifier {
 
-  public var rawValue: String {
+  /// The identifier's string form, as handed to File Provider.
+  public var stringValue: String {
     switch self {
     case .root:
       return "root"
@@ -92,15 +108,16 @@ extension ItemIdentifier: RawRepresentable {
     }
   }
 
-  public init?(rawValue: String) {
-    if rawValue == "root" {
+  /// Parses a string from ``stringValue``; `nil` for anything else.
+  public init?(stringValue string: String) {
+    if string == "root" {
       self = .root
       return
     }
 
-    guard let colon = rawValue.firstIndex(of: ":") else { return nil }
-    let head = rawValue[..<colon]
-    let tail = rawValue[rawValue.index(after: colon)...]
+    guard let colon = string.firstIndex(of: ":") else { return nil }
+    let head = string[..<colon]
+    let tail = string[string.index(after: colon)...]
 
     switch head {
     case "doc":
@@ -137,18 +154,14 @@ extension ItemIdentifier: RawRepresentable {
   private static func encode(_ key: FolderKey) -> String {
     switch key {
     case .correspondent(let id), .documentType(let id):
-      return encodeOptional(id)
+      return FolderKey.token(for: id)
     case .year(let year):
       return String(year)
     case .correspondentYear(let correspondent, let year):
-      let base = encodeOptional(correspondent)
+      let base = FolderKey.token(for: correspondent)
       guard let year else { return base }
       return "\(base)/\(year)"
     }
-  }
-
-  private static func encodeOptional(_ id: UInt?) -> String {
-    id.map { String($0) } ?? noneKey
   }
 
   private static func decodeKey(layout: FolderLayout, _ raw: Substring) -> FolderKey? {
@@ -182,7 +195,7 @@ extension ItemIdentifier: RawRepresentable {
   }
 
   private static func parseOptionalID(_ raw: Substring) -> OptionalID? {
-    if raw == noneKey { return OptionalID(value: nil) }
+    if raw == FolderKey.noneToken { return OptionalID(value: nil) }
     guard let id = parseID(raw) else { return nil }
     return OptionalID(value: id)
   }
@@ -210,14 +223,14 @@ extension ItemIdentifier: RawRepresentable {
 }
 
 extension ItemIdentifier: CustomStringConvertible {
-  public var description: String { rawValue }
+  public var description: String { stringValue }
 }
 
 extension ItemIdentifier: Codable {
   public init(from decoder: any Decoder) throws {
     let container = try decoder.singleValueContainer()
     let raw = try container.decode(String.self)
-    guard let value = ItemIdentifier(rawValue: raw) else {
+    guard let value = ItemIdentifier(stringValue: raw) else {
       throw DecodingError.dataCorruptedError(
         in: container, debugDescription: "Invalid item identifier \(raw)")
     }
@@ -226,17 +239,17 @@ extension ItemIdentifier: Codable {
 
   public func encode(to encoder: any Encoder) throws {
     var container = encoder.singleValueContainer()
-    try container.encode(rawValue)
+    try container.encode(stringValue)
   }
 }
 
 extension ItemIdentifier: CodingKeyRepresentable {
   public var codingKey: any CodingKey {
-    IdentifierCodingKey(stringValue: rawValue)
+    IdentifierCodingKey(stringValue: stringValue)
   }
 
   public init?<T: CodingKey>(codingKey: T) {
-    self.init(rawValue: codingKey.stringValue)
+    self.init(stringValue: codingKey.stringValue)
   }
 }
 
