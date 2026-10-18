@@ -120,25 +120,44 @@ struct ChangePagerTests {
 
 @Suite
 struct ItemPagerTests {
-  @Test("Pages walk the list; foreign tokens start at the beginning")
-  func paging() {
-    let items = Array(0..<7)
+  private func walk(_ lists: [[String]], size: Int) -> [String] {
     var token = Data("anything the system sends first".utf8)
-    var seen: [Int] = []
-    var pages = 0
+    var served: [String] = []
+    var call = 0
     while true {
-      let page = ItemPager.page(items, token: token, size: 3)
-      seen += page.items
-      pages += 1
+      // Each call may see a different list, as after a library reread.
+      let list = lists[min(call, lists.count - 1)]
+      let page = ItemPager.page(list, key: { $0 }, token: token, size: size)
+      served += page.items
+      call += 1
       guard let next = page.next else { break }
       token = next
     }
-    #expect(seen == items)
-    #expect(pages == 3)
-    #expect(ItemPager.page([Int](), token: Data(), size: 3).next == nil)
-    #expect(Array(ItemPager.page(items, token: Data("offset:99".utf8), size: 3).items) == [])
+    return served
+  }
+
+  @Test("Pages walk the list in key order; foreign tokens start at the beginning")
+  func paging() {
+    let items = (0..<7).map { "doc:\($0)" }.shuffled()
+    #expect(walk([items], size: 3) == items.sorted())
+    #expect(ItemPager.page([String](), key: { $0 }, token: Data(), size: 3).next == nil)
     #expect(ItemPager.isFirstPage(Data("anything".utf8)))
-    #expect(!ItemPager.isFirstPage(ItemPager.page(items, token: Data(), size: 3).next!))
+    let first = ItemPager.page(items, key: { $0 }, token: Data(), size: 3)
+    #expect(!ItemPager.isFirstPage(first.next!))
+  }
+
+  @Test("A reread between pages neither repeats nor drops an item that is in both lists")
+  func rereadBetweenPages() {
+    let before = ["a", "b", "c", "d", "e", "f", "g"]
+    // Between pages: "b" (already served) and "f" are gone, "aa" and "ff"
+    // appeared, one before and one after the cursor.
+    let after = ["a", "aa", "c", "d", "e", "ff", "g"]
+    let served = walk([before, after, after, after], size: 2)
+    #expect(served.count == Set(served).count, "an item was served twice")
+    for item in Set(before).intersection(after) {
+      #expect(served.contains(item), "\(item) was dropped")
+    }
+    #expect(served.contains("ff"))
   }
 }
 

@@ -117,33 +117,45 @@ public enum ChangePager {
   }
 }
 
-/// Pages a list of items for `enumerateItems`, with a page token that is the
-/// next offset. The system's initial page tokens (sorted by name or by date)
-/// and any token this type did not make start at the beginning.
+/// Pages a list of items for `enumerateItems`.
+///
+/// Items are served in the order of a stable key (the extension uses the
+/// identifier string), and a page token names the key of the last item
+/// served. The next page starts after that key in whatever list the next call
+/// gets, so a library reread between two pages neither repeats nor skips an
+/// item that is in both lists: an item that appears meanwhile with a smaller
+/// key is not listed in this enumeration, and reaches the system as a change.
+/// The system's initial page tokens (sorted by name or by date) and any token
+/// this type did not make start at the beginning. The order is not the one
+/// Files shows; Files sorts the items itself.
 public enum ItemPager {
-  static let prefix = "offset:"
+  static let prefix = "after:"
 
   /// The items of one page and the token of the next, `nil` after the last.
-  public static func page<Element>(_ items: [Element], token: Data, size: Int)
-    -> (items: ArraySlice<Element>, next: Data?)
-  {
+  public static func page<Element>(
+    _ items: [Element], key: (Element) -> String, token: Data, size: Int
+  ) -> (items: [Element], next: Data?) {
     let size = max(1, size)
-    let start = min(offset(of: token), items.count)
-    let end = min(start + size, items.count)
-    let next = end < items.count ? Data("\(prefix)\(end)".utf8) : nil
-    return (items[start..<end], next)
+    let after = lastKey(of: token)
+    var keyed = items.map { (key: key($0), item: $0) }
+    if let after { keyed.removeAll { $0.key <= after } }
+    keyed.sort { $0.key < $1.key }
+    let pageItems = keyed.prefix(size)
+    let next =
+      keyed.count > size ? pageItems.last.map { Data("\(prefix)\($0.key)".utf8) } : nil
+    return (pageItems.map(\.item), next)
   }
 
   /// Whether `token` starts a new enumeration (any token this type did not
-  /// make, or offset 0), the moment to reread the library.
+  /// make), the moment to reread the library.
   public static func isFirstPage(_ token: Data) -> Bool {
-    offset(of: token) == 0
+    lastKey(of: token) == nil
   }
 
-  static func offset(of token: Data) -> Int {
-    guard let text = String(data: token, encoding: .utf8), text.hasPrefix(prefix),
-      let value = Int(text.dropFirst(prefix.count)), value >= 0
-    else { return 0 }
-    return value
+  static func lastKey(of token: Data) -> String? {
+    guard let text = String(data: token, encoding: .utf8), text.hasPrefix(prefix) else {
+      return nil
+    }
+    return String(text.dropFirst(prefix.count))
   }
 }
