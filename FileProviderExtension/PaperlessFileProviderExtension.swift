@@ -12,8 +12,9 @@ import os
 /// This is the scaffolding stage. The root enumerates nothing and every write
 /// is refused, so the target builds, embeds and loads before any library code
 /// lands. Read-only enforcement follows upstream issue #727 Stage 4: items
-/// carry no write capabilities, `createItem` declines the import,
-/// `modifyItem` reverts and `deleteItem` rejects the deletion.
+/// carry no write capabilities, `createItem` fails with
+/// `.cannotSynchronize` (keeping the user's file), `modifyItem` reverts and
+/// `deleteItem` rejects the deletion.
 ///
 /// `init(domain:)` is synchronous and nonisolated and stores only the domain.
 /// The database and repository stack is built lazily on the main actor when
@@ -73,7 +74,16 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
 
   // MARK: Writes (refused: the extension is read-only)
 
-  /// Declines the import; the system then deletes the imported item from disk.
+  /// Refuses the import visibly and keeps the user's file. Returning a nil item
+  /// with no error would make the system delete the imported file ("If the
+  /// imported item is refused by the extension, it should return nil for the
+  /// createdItem without any error. In that case, the source item will be
+  /// deleted from disk.", NSFileProviderReplicatedExtension.h, createItem).
+  /// The same header lists `NSFileProviderErrorCannotSynchronize` for a
+  /// creation that cannot be applied: "the system will present an appropriate
+  /// error message and back off until the next time it is signalled", and
+  /// NSFileProviderError.h says the system will not retry the item until it is
+  /// modified on disk or the extension is updated.
   func createItem(
     basedOn itemTemplate: NSFileProviderItem,
     fields: NSFileProviderItemFields,
@@ -83,7 +93,7 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
   ) -> Progress {
     Self.logger.warning("Refused createItem: the File Provider is read-only")
-    completionHandler(nil, [], false, nil)
+    completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
     return Progress()
   }
 
@@ -129,6 +139,10 @@ final class RootItem: NSObject, NSFileProviderItem {
   var contentType: UTType { .folder }
   var capabilities: NSFileProviderItemCapabilities { [.allowsReading, .allowsContentEnumerating] }
   var fileSystemFlags: NSFileProviderFileSystemFlags { [.userReadable, .userExecutable] }
+  /// Constant: the empty root never changes at this stage.
+  var itemVersion: NSFileProviderItemVersion {
+    NSFileProviderItemVersion(contentVersion: Data("root".utf8), metadataVersion: Data("root".utf8))
+  }
 }
 
 /// Enumerates nothing: the root and the working set are empty at this stage.
