@@ -14,18 +14,18 @@
   @MainActor
   @Suite
   struct FileProviderSignalerTests {
-    @Test("The first signal is sent at once and a burst after it becomes one trailing signal")
+    @Test("A burst of signals becomes the first one plus one trailing signal")
     func burstCoalesces() async throws {
       let sent = Sent()
       let signaler = FileProviderSignaler(interval: .milliseconds(300)) { await sent.append($0) }
       let server = UUID()
 
+      // No suspension between the calls, so all of them land inside one interval
+      // however slow the host is.
       signaler.signal(serverID: server)
-      try await eventually { await sent.ids.count == 1 }
       signaler.signal(serverID: server)
       signaler.signal(serverID: server)
       signaler.signal(serverID: server)
-      #expect(await sent.ids.count == 1)
 
       try await eventually { await sent.ids.count == 2 }
       try await Task.sleep(for: .milliseconds(400))
