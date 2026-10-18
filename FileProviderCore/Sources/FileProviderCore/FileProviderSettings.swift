@@ -61,12 +61,14 @@ public struct FileProviderSettings: Codable, Equatable, Hashable, Sendable {
     layout = layoutRaw.flatMap(FolderLayout.init(rawValue:)) ?? defaults.layout
 
     // Per element: an unknown or non-string element is dropped and the rest
-    // kept. Only a missing key or a value that is not an array gives the
-    // default.
+    // kept. An empty array means every browse folder is off. A missing key,
+    // a value that is not an array, or an array in which no element is a
+    // known browse folder gives the default.
     if let elements = try? container.decodeIfPresent(
       [LenientElement].self, forKey: .browseFolders)
     {
-      browseFolders = Set(elements.compactMap { $0.value.flatMap(BrowseFolder.init(rawValue:)) })
+      let known = Set(elements.compactMap { $0.value.flatMap(BrowseFolder.init(rawValue:)) })
+      browseFolders = known.isEmpty && !elements.isEmpty ? defaults.browseFolders : known
     } else {
       browseFolders = defaults.browseFolders
     }
