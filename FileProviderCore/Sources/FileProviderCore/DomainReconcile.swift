@@ -21,6 +21,23 @@ public enum DomainReconcile {
     }
   }
 
+  /// A configured server, as the domain sync sees it.
+  public struct Server: Equatable, Hashable, Sendable {
+    /// The domain identifier: the server's UUID string.
+    public var identifier: String
+    /// The name the server is shown under (its friendly name or host).
+    public var displayName: String
+    /// The account's user name, used to tell apart servers that share a
+    /// display name.
+    public var userName: String?
+
+    public init(identifier: String, displayName: String, userName: String? = nil) {
+      self.identifier = identifier
+      self.displayName = displayName
+      self.userName = userName
+    }
+  }
+
   public struct Result: Equatable, Sendable {
     /// Servers with no domain yet.
     public var add: [Domain]
@@ -44,12 +61,58 @@ public enum DomainReconcile {
   }
 
   /// - Parameters:
-  ///   - servers: Server identifier to the display name its domain should have.
+  ///   - servers: The configured servers. Their domain names come from
+  ///     ``displayNames(for:)``.
   ///   - domains: Existing domain identifier to its current display name.
   /// - Returns: Each list sorted by identifier. `remove` carries the existing
   ///   domain's name; `renameInPlace` carries the new name. A domain is only
   ///   in `remove` when its server is gone, never because of a rename.
+  public static func reconcile(servers: [Server], domains: [String: String]) -> Result {
+    reconcile(names: displayNames(for: servers), domains: domains)
+  }
+
+  /// The same, for servers given as identifier to display name, with no user
+  /// names. Display names are still made distinct.
   public static func reconcile(servers: [String: String], domains: [String: String]) -> Result {
+    reconcile(
+      servers: servers.map { Server(identifier: $0.key, displayName: $0.value) },
+      domains: domains)
+  }
+
+  /// The domain name for each server, distinct across servers (compared
+  /// case-insensitively after NFC), so Files never lists two locations with
+  /// one name. A name shared by several servers gets ` (<user name>)`, or
+  /// ` (<first 8 characters of the identifier>)` when the server has no user
+  /// name; names still shared after that get ` (<full identifier>)`.
+  public static func displayNames(for servers: [Server]) -> [String: String] {
+    func duplicates(_ names: [String: String]) -> Set<String> {
+      let groups = Dictionary(grouping: names, by: { FileNaming.comparisonKey($0.value) })
+      return Set(groups.values.filter { $0.count > 1 }.flatMap { $0.map(\.key) })
+    }
+
+    var names = Dictionary(
+      servers.map { ($0.identifier, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+    let byID = Dictionary(
+      servers.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first })
+
+    for identifier in duplicates(names) {
+      guard let server = byID[identifier] else { continue }
+      if let user = server.userName, !user.isEmpty {
+        names[identifier] = "\(server.displayName) (\(user))"
+      } else {
+        names[identifier] = "\(server.displayName) (\(identifier.prefix(8)))"
+      }
+    }
+    for identifier in duplicates(names) {
+      guard let server = byID[identifier] else { continue }
+      names[identifier] = "\(server.displayName) (\(identifier))"
+    }
+    return names
+  }
+
+  private static func reconcile(names servers: [String: String], domains: [String: String])
+    -> Result
+  {
     var result = Result()
     for (identifier, name) in servers {
       if let existing = domains[identifier] {
