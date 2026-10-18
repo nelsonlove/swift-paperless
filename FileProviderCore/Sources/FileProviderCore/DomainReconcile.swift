@@ -90,14 +90,6 @@ public enum DomainReconcile {
     return result
   }
 
-  /// The same, for servers given as identifier to display name, with no user
-  /// names. Display names are still made distinct.
-  public static func reconcile(servers: [String: String], domains: [String: String]) -> Result {
-    reconcile(
-      servers: servers.map { Server(identifier: $0.key, displayName: $0.value) },
-      domains: domains)
-  }
-
   /// The domain name for each server, always distinct across servers
   /// (compared case-insensitively after NFC), so Files never lists two
   /// locations with one name.

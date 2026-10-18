@@ -22,11 +22,11 @@ public enum FolderKey: Hashable, Sendable {
   /// The text for a missing correspondent or document type, both in folder
   /// identifiers (`dir:correspondent:none`) and in the tree's collision
   /// suffixes and fallback names. The one spelling of it.
-  public static let noneToken = "none"
+  static let noneToken = "none"
 
   /// An id as written in identifiers and suffixes: its decimal form, or
   /// ``noneToken``.
-  public static func token(for id: UInt?) -> String {
+  static func token(for id: UInt?) -> String {
     id.map { String($0) } ?? noneToken
   }
 

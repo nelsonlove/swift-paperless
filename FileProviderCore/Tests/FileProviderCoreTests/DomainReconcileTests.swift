@@ -12,9 +12,18 @@ import Testing
 struct DomainReconcileTests {
   typealias Domain = DomainReconcile.Domain
 
+  /// Servers given as identifier to display name, with no user names.
+  private func reconcile(servers: [String: String], domains: [String: String])
+    -> DomainReconcile.Result
+  {
+    DomainReconcile.reconcile(
+      servers: servers.map { DomainReconcile.Server(identifier: $0.key, displayName: $0.value) },
+      domains: domains)
+  }
+
   @Test("Servers without a domain are added; domains without a server are removed")
   func addAndRemove() {
-    let result = DomainReconcile.reconcile(
+    let result = reconcile(
       servers: ["b": "Home server", "a": "Office"],
       domains: ["a": "Office", "c": "Old server"])
     #expect(result.add == [Domain(identifier: "b", displayName: "Home server")])
@@ -24,7 +33,7 @@ struct DomainReconcileTests {
 
   @Test("A renamed server is renamed in place and never removed")
   func rename() {
-    let result = DomainReconcile.reconcile(
+    let result = reconcile(
       servers: ["a": "Office (new)", "b": "Home"], domains: ["a": "Office", "b": "Home"])
     #expect(
       result == .init(renameInPlace: [Domain(identifier: "a", displayName: "Office (new)")]))
@@ -34,13 +43,13 @@ struct DomainReconcileTests {
 
   @Test("Matching state gives nothing to do")
   func noop() {
-    #expect(DomainReconcile.reconcile(servers: ["a": "A"], domains: ["a": "A"]).isEmpty)
-    #expect(DomainReconcile.reconcile(servers: [:], domains: [:]).isEmpty)
+    #expect(reconcile(servers: ["a": "A"], domains: ["a": "A"]).isEmpty)
+    #expect(reconcile(servers: [:], domains: [:]).isEmpty)
   }
 
   @Test("Results are sorted by identifier")
   func sorted() {
-    let result = DomainReconcile.reconcile(
+    let result = reconcile(
       servers: ["c": "C", "a": "A", "b": "B"], domains: ["z": "Z", "y": "Y"])
     #expect(result.add.map(\.identifier) == ["a", "b", "c"])
     #expect(result.remove.map(\.identifier) == ["y", "z"])
@@ -79,9 +88,8 @@ struct DomainReconcileTests {
     #expect(names[third] == "Paperless (9F8E7D6C)")
     #expect(Set(names.values.map(FileNaming.comparisonKey)).count == 3)
 
-    // The dictionary form has no user names and is made distinct too.
-    let result = DomainReconcile.reconcile(
-      servers: [first: "Home", third: "Home"], domains: [:])
+    // Without user names the 8-character id tells them apart.
+    let result = reconcile(servers: [first: "Home", third: "Home"], domains: [:])
     #expect(result.add.map(\.displayName) == ["Home (0A1B2C3D)", "Home (9F8E7D6C)"])
   }
 
