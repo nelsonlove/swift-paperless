@@ -2,5 +2,7 @@
 
 ENABLE_PREVIEWS = NO
 
-// The mock library's PDFs (see project.yml) are bundled in Debug only.
-EXCLUDED_SOURCE_FILE_NAMES = $(inherited) invoice.pdf japan.pdf street.pdf
+// The mock library's PDFs (see project.yml) are bundled in Debug only: every
+// file under the repository's "Preview PDFs" folder, matched by path. `?` stands
+// for the space, which a list-valued setting would split on.
+EXCLUDED_SOURCE_FILE_NAMES = $(inherited) */Preview?PDFs/*

@@ -28,7 +28,7 @@
           fileIndex: stack.contentReclaimer,
           archiveURL: { Bundle.main.url(forResource: $0, withExtension: "pdf") })
         Logger.shared.notice(
-          "Mock library seeded: \(report.documents, privacy: .public) documents, \(report.storedFiles, privacy: .public) files, \(report.removedDocuments, privacy: .public) removed, missing \(report.missingFiles, privacy: .public)"
+          "Mock library seeded: \(report.documents, privacy: .public) documents, \(report.storedFiles, privacy: .public) files stored, \(report.keptFiles, privacy: .public) kept, \(report.removedDocuments, privacy: .public) removed, missing \(report.missingFiles, privacy: .public)"
         )
       } catch {
         Logger.shared.error("Seeding the mock library failed: \(error)")
@@ -44,18 +44,19 @@
       }
 
       // Not through `login`: its connection-change event would start a second
-      // `refreshConnection` beside the one the launch task runs next. Set the
-      // pointer and wait for the manager's observer to pick up the row, so that
-      // launch refresh finds it.
+      // `refreshConnection` beside the one the launch task runs next. Wait for
+      // the manager's observer to hold the row, then point at it, so the
+      // pointer never names a server the manager does not have.
       let manager = stack.connectionManager
-      manager.activeConnectionId = MockLibrary.serverID
       let deadline = ContinuousClock.now + .seconds(3)
       while manager.connections[MockLibrary.serverID] == nil, ContinuousClock.now < deadline {
         try? await Task.sleep(for: .milliseconds(20))
       }
-      if manager.connections[MockLibrary.serverID] == nil {
+      guard manager.connections[MockLibrary.serverID] != nil else {
         Logger.shared.error("The connection manager never saw the mock library's server row")
+        return
       }
+      manager.activeConnectionId = MockLibrary.serverID
     }
   }
 
