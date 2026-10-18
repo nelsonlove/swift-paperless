@@ -14,7 +14,7 @@ number, archives, signs, uploads via `asc`, and tags the result), which runs fro
 | Asset | Renewal | Notes |
 | --- | --- | --- |
 | **Apple Distribution certificate** | **Yearly — this doc** | Signs the App Store export. Lives in your login keychain locally and as GitHub secrets in CI. |
-| **App Store provisioning profiles** | **When the cert changes** | Export uses *manual* signing, so `beta_ci.sh` installs two fixed-name App Store profiles (see step 6). They're bound to the dist cert(s), so a new cert means they must be recreated/rebound. |
+| **App Store provisioning profiles** | **When the cert changes** | Export uses *manual* signing, so `beta_ci.sh` installs three fixed-name App Store profiles (see step 6). They're bound to the dist cert(s), so a new cert means they must be recreated/rebound. |
 | App Store Connect API key (`AuthKey.p8`) | Does not expire | Used for ASC auth (`asc`) and dev-signing the archive. Only rotate if compromised. |
 
 > **Why the cert and profiles are coupled:** the export step
@@ -146,7 +146,7 @@ security import dist.p12 \
 
 ### 6. Rebind the App Store provisioning profiles to the new cert
 
-Export uses **manual** signing with two fixed-name App Store profiles that
+Export uses **manual** signing with three fixed-name App Store profiles that
 `beta_ci.sh` installs by name each run (`APPSTORE_PROFILE_NAMES` in the script;
 `provisioningProfiles` in `scripts/ExportOptions.plist`):
 
@@ -154,6 +154,7 @@ Export uses **manual** signing with two fixed-name App Store profiles that
 | --- | --- |
 | `swift-paperless AppStore CI` | `com.paulgessinger.swift-paperless` |
 | `swift-paperless ShareExtension AppStore CI` | `com.paulgessinger.swift-paperless.ShareExtension` |
+| `swift-paperless FileProviderExtension AppStore CI` | `com.paulgessinger.swift-paperless.FileProviderExtension` |
 
 Each is bound to the distribution cert, so a new cert means they must be
 recreated. A profile can't be edited in place — delete the stale same-named one
@@ -164,11 +165,13 @@ and create a fresh one bound to the new cert:
 NEW_CERT_ID="$(jq -r '.data.id' cert.json)"
 APP_BUNDLE="$(asc bundle-ids list --output json | jq -r '.data[] | select(.attributes.identifier=="com.paulgessinger.swift-paperless") | .id')"
 EXT_BUNDLE="$(asc bundle-ids list --output json | jq -r '.data[] | select(.attributes.identifier=="com.paulgessinger.swift-paperless.ShareExtension") | .id')"
+FP_BUNDLE="$(asc bundle-ids list --output json | jq -r '.data[] | select(.attributes.identifier=="com.paulgessinger.swift-paperless.FileProviderExtension") | .id')"
 
 # Optionally keep the old cert id(s) in --certificate too (comma-separated) so
 # in-flight builds signed with the old cert stay valid during the transition.
 for pair in "swift-paperless AppStore CI|$APP_BUNDLE" \
-            "swift-paperless ShareExtension AppStore CI|$EXT_BUNDLE"; do
+            "swift-paperless ShareExtension AppStore CI|$EXT_BUNDLE" \
+            "swift-paperless FileProviderExtension AppStore CI|$FP_BUNDLE"; do
   name="${pair%%|*}"; bundle="${pair##*|}"
   old="$(asc profiles list --profile-type IOS_APP_STORE --output json \
     | jq -r --arg n "$name" '.data[] | select(.attributes.name==$n) | .id')"
