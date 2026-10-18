@@ -38,6 +38,13 @@ public final class AppStack {
     // work starts.
     linkCost: { [weak self] in self?.networkMonitor.cost ?? .unknown })
 
+  #if canImport(FileProvider)
+    /// Lazy, so only the app, which starts it, keeps File Provider domains;
+    /// the extensions never add or remove one.
+    public private(set) lazy var fileProviderDomainSync = FileProviderDomainSync(
+      connectionManager: connectionManager)
+  #endif
+
   /// - Parameter contentStore: where downloaded files live; `nil` caches no
   ///   files. Only the on-disk database may be paired with the app-group store:
   ///   an index that does not outlive the process would judge every file on
