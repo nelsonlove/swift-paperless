@@ -165,16 +165,10 @@ struct TreeDiffTests {
     #expect(diff.changes.contains(.update(.document(12))))
     #expect(diff.changes.contains(.delete(.folder(.correspondent(3)))))
 
-    // Every update precedes every deletion in the one list the API offers.
-    let firstDelete = diff.changes.firstIndex {
-      if case .delete = $0 { return true }
-      return false
-    }
-    let lastUpdate = diff.changes.lastIndex {
-      if case .update = $0 { return true }
-      return false
-    }
-    #expect(lastUpdate! < firstDelete!)
+    // The folder held a survivor, so its deletion comes after the move.
+    let move = diff.changes.firstIndex(of: .update(.document(12)))!
+    let removal = diff.changes.firstIndex(of: .delete(.folder(.correspondent(3))))!
+    #expect(move < removal)
 
     // Applies changes one at a time and reports whether document 12 was ever
     // missing on the way, which for the system means it was deleted (its
@@ -204,6 +198,57 @@ struct TreeDiffTests {
       + diff.changes.filter { if case .update = $0 { true } else { false } }
     let wrong = walk(deletionsFirst)
     #expect(wrong.everLost)
+  }
+
+  /// Identifiers of items that share a name (case-insensitively after NFC)
+  /// with a sibling in the given state.
+  private func siblingClashes(_ state: TreeSnapshot) -> Set<ItemIdentifier> {
+    var groups: [String: [ItemIdentifier]] = [:]
+    for (id, entry) in state.entries {
+      groups["\(entry.parent.stringValue)/\(FileNaming.comparisonKey(entry.name))", default: []]
+        .append(id)
+    }
+    return Set(groups.values.filter { $0.count > 1 }.flatMap { $0 })
+  }
+
+  @Test("A sibling renamed to a deleted folder's name never shares it during the replay")
+  func renameToDeletedName() {
+    // Acme Utilities' documents are deleted, and Northwind Bank is renamed to
+    // "Acme Utilities" in the same diff.
+    let remaining = Fixtures.documents.filter { $0.correspondent != 1 }
+    var correspondents = Fixtures.correspondents
+    correspondents[1].name = "Acme Utilities"
+    let old = Fixtures.tree().snapshot()
+    let new = LibraryTree(
+      documents: remaining, tags: Fixtures.tags, correspondents: correspondents,
+      documentTypes: Fixtures.documentTypes
+    ).snapshot()
+    let diff = TreeDiff(from: old, to: new)
+    #expect(diff.changes.contains(.delete(.folder(.correspondent(1)))))
+    #expect(diff.changes.contains(.update(.folder(.correspondent(2)))))
+    #expect(new.entries[.folder(.correspondent(2))]?.name == "Acme Utilities")
+
+    // The documented order: no step ever has two siblings with one name, and
+    // it ends in the new tree.
+    var state = old
+    #expect(siblingClashes(state).isEmpty)
+    for change in diff.changes {
+      state = replay([change], on: state, new: new)
+      #expect(siblingClashes(state).isEmpty, "clash after \(change)")
+    }
+    #expect(state == new)
+
+    // All updates before all deletions would have a step with a clash.
+    let updatesFirst =
+      diff.changes.filter { if case .update = $0 { true } else { false } }
+      + diff.changes.filter { if case .delete = $0 { true } else { false } }
+    var naive = old
+    var clashed = false
+    for change in updatesFirst {
+      naive = replay([change], on: naive, new: new)
+      if !siblingClashes(naive).isEmpty { clashed = true }
+    }
+    #expect(clashed)
   }
 
   @Test("Snapshots survive a JSON round trip")

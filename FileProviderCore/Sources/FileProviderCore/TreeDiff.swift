@@ -12,16 +12,21 @@ import Foundation
 /// after a correspondent edit or a layout switch) is an update, never a delete
 /// plus an add, so bookmarks to it survive.
 ///
-/// The order is the contract: every update comes before every deletion.
-/// Deleting a folder also deletes whatever the system still has inside it, so
-/// an item moved out of a folder that is deleted in the same change set must
-/// be re-parented first. Updates run by depth in the new snapshot, folders
-/// before documents at the same depth, so every folder exists before its
-/// children arrive; deletions run deepest first, so children go before their
-/// folders. Report `changes` in sequence (`didUpdate` for each run of updates,
+/// The order is the contract, in three runs:
+///
+/// 1. Safe deletions, deepest first: deletions whose subtree in the old
+///    snapshot holds no item that survives in the new one. Sending them first
+///    frees their names, so a sibling renamed to a deleted item's name never
+///    shares it with that item.
+/// 2. All updates, by depth in the new snapshot, folders before documents at
+///    the same depth, so every folder exists before its children arrive.
+/// 3. The other deletions, deepest first. Deleting a folder also deletes
+///    whatever the system still has inside it, so a folder that held a
+///    surviving item is deleted only after that item has moved out.
+///
+/// Report `changes` in sequence (`didUpdate` for each run of updates,
 /// `didDeleteItems` for each run of deletions); there is no other public view
-/// of the diff, so the updates cannot be reported after the deletions by
-/// mistake.
+/// of the diff, so the runs cannot be reordered by mistake.
 public struct TreeDiff: Equatable, Sendable {
   public enum Change: Hashable, Sendable {
     /// A new item, or one whose parent, name or version changed.
@@ -30,7 +35,8 @@ public struct TreeDiff: Equatable, Sendable {
     case delete(ItemIdentifier)
   }
 
-  /// All updates, then all deletions, each in the order described above.
+  /// Safe deletions, then updates, then the other deletions, as described
+  /// above.
   public let changes: [Change]
 
   public var isEmpty: Bool { changes.isEmpty }
@@ -47,16 +53,32 @@ public struct TreeDiff: Equatable, Sendable {
       return lhs.key < rhs.key
     }
 
-    var deleted: [(id: ItemIdentifier, key: String, depth: Int)] = []
+    // Every old ancestor of an item that survives holds a survivor.
+    var holdsSurvivor = Set<ItemIdentifier>()
+    for identifier in old.entries.keys where new.entries[identifier] != nil {
+      var current = old.entries[identifier]?.parent
+      while let parent = current, holdsSurvivor.insert(parent).inserted {
+        current = old.entries[parent]?.parent
+      }
+    }
+
+    var deleted: [(id: ItemIdentifier, key: String, depth: Int, safe: Bool)] = []
     for identifier in old.entries.keys where new.entries[identifier] == nil {
-      deleted.append((identifier, identifier.stringValue, old.depth(of: identifier)))
+      deleted.append(
+        (
+          identifier, identifier.stringValue, old.depth(of: identifier),
+          !holdsSurvivor.contains(identifier)
+        ))
     }
     deleted.sort { lhs, rhs in
       if lhs.depth != rhs.depth { return lhs.depth > rhs.depth }
       return lhs.key < rhs.key
     }
 
-    changes = updated.map { .update($0.id) } + deleted.map { .delete($0.id) }
+    changes =
+      deleted.filter(\.safe).map { .delete($0.id) }
+      + updated.map { .update($0.id) }
+      + deleted.filter { !$0.safe }.map { .delete($0.id) }
   }
 
   /// The updated identifiers, in order. For tests.
