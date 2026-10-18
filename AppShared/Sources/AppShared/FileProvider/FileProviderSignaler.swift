@@ -22,7 +22,11 @@
   /// the interval after it are folded into one trailing signal at the end of
   /// the interval, so a burst of writes costs the extension at most two change
   /// enumerations per interval (the leading one and the trailing one), and the
-  /// last change of the burst is never lost.
+  /// last change of the burst is never lost while the process runs.
+  ///
+  /// A short-lived process (the Share Extension) can be suspended or ended
+  /// before a trailing signal is due, and then that signal is lost. Such a
+  /// process calls ``flush()`` before it finishes.
   ///
   /// The system call only exists on iOS. On Mac Catalyst and on macOS (where
   /// the package is host-tested) the default ``send`` does nothing: the
@@ -41,6 +45,7 @@
     private let clock = ContinuousClock()
     private var lastSent: [UUID: ContinuousClock.Instant] = [:]
     private var trailing: [UUID: Task<Void, Never>] = [:]
+    private var sending: [UUID: Task<Void, Never>] = [:]
 
     public init(interval: Duration = .seconds(2), send: Send? = nil) {
       self.interval = interval
@@ -54,7 +59,8 @@
       if let last = lastSent[serverID], clock.now < last + interval {
         let deadline = last + interval
         trailing[serverID] = Task { [weak self] in
-          try? await Task.sleep(until: deadline, clock: .continuous)
+          // Cancelled by `flush()`, which has already sent it.
+          guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
           self?.fire(serverID)
         }
       } else {
@@ -66,7 +72,23 @@
       trailing[serverID] = nil
       lastSent[serverID] = clock.now
       let send = send
-      Task { await send(serverID) }
+      let previous = sending[serverID]
+      sending[serverID] = Task {
+        await previous?.value
+        await send(serverID)
+      }
+    }
+
+    /// Sends every pending trailing signal now, and returns when every signal
+    /// sent so far has been handed to the system.
+    public func flush() async {
+      for (serverID, task) in trailing {
+        task.cancel()
+        fire(serverID)
+      }
+      for task in sending.values {
+        await task.value
+      }
     }
 
     /// Best effort: a failure is logged, and the next change signals again.

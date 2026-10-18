@@ -32,6 +32,32 @@
       #expect(await sent.ids == [server, server])
     }
 
+    @Test("flush sends a pending trailing signal at once and waits for every send")
+    func flushSendsPendingSignal() async throws {
+      let sent = Sent()
+      let signaler = FileProviderSignaler(interval: .seconds(60)) { await sent.append($0) }
+      let server = UUID()
+
+      signaler.signal(serverID: server)
+      signaler.signal(serverID: server)
+      await signaler.flush()
+
+      #expect(await sent.ids == [server, server])
+    }
+
+    @Test("flush with nothing pending sends nothing more")
+    func flushWithNothingPending() async throws {
+      let sent = Sent()
+      let signaler = FileProviderSignaler(interval: .seconds(60)) { await sent.append($0) }
+      let server = UUID()
+
+      signaler.signal(serverID: server)
+      await signaler.flush()
+      await signaler.flush()
+
+      #expect(await sent.ids == [server])
+    }
+
     @Test("Servers are coalesced separately")
     func serversAreIndependent() async throws {
       let sent = Sent()
