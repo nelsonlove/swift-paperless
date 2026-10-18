@@ -79,7 +79,7 @@ struct DocumentFetchAllTests {
     let firstTen = try await database.documents(serverID: server, after: nil, limit: 10)
     #expect(ids(firstTen) == [1, 3, 5, 7, 9])
     #expect(ids(try await database.documents(serverID: server, after: nil, limit: 0)).isEmpty)
-    #expect(ids(try await database.documents(serverID: server, after: nil, limit: -1)).isEmpty)
+    #expect(ids(try await database.documents(serverID: server, after: UInt.max, limit: 10)).isEmpty)
     #expect(ids(try await database.documents(serverID: server)) == [1, 3, 5, 7, 9])
   }
 

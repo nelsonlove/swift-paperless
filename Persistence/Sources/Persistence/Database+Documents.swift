@@ -611,15 +611,16 @@ extension Database {
 
   /// A server's cached documents, decoded like `document(serverID:id:)` and
   /// ordered by id ascending: ids greater than `after` (`nil` starts from the
-  /// beginning), at most `limit` (`nil` means all; a negative limit is treated
-  /// as zero).
+  /// beginning), at most `limit` (`nil` means all; `limit` must not be
+  /// negative).
   ///
   /// Each call is its own read. Paging with `after: lastPage.last?.id` does not
   /// see one snapshot: a row inserted below the cursor between two calls is not
   /// returned, and a row deleted after its page was read stays in the caller's
-  /// result. Re-read after the next change signal. One row that fails to
-  /// decode fails the whole call. With no `limit`, every row is decoded at
-  /// once; a memory-limited caller should page.
+  /// result. A caller that needs a consistent view reads again after its own
+  /// change notification. One row that fails to decode fails the whole call.
+  /// With no `limit`, every row is decoded at once; a memory-limited caller
+  /// should page.
   public func documents(
     serverID: UUID, after: UInt? = nil, limit: Int? = nil
   ) async throws -> [Document] {
@@ -633,10 +634,13 @@ extension Database {
   private static func fetchDocuments(
     _ db: GRDB.Database, serverID: UUID, after: UInt?, limit: Int?
   ) throws -> [Document] {
+    precondition(limit.map { $0 >= 0 } ?? true, "documents(serverID:after:limit:): negative limit")
+    // Ids are stored as Int64; a cursor beyond that range has nothing after it.
+    if let after, after > UInt(Int64.max) { return [] }
     var request = DocumentRecord.filter(Column("server_id") == serverID)
     if let after { request = request.filter(Column("id") > after) }
     request = request.order(Column("id"))
-    if let limit { request = request.limit(max(0, limit)) }
+    if let limit { request = request.limit(limit) }
     return try request.fetchAll(db).map(\.domain)
   }
 
