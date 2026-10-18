@@ -43,8 +43,8 @@ import Foundation
 /// while the old "Acme" still holds them.
 public struct TreeDiff: Equatable, Sendable {
   public enum Change: Hashable, Sendable {
-    /// A new item, or one whose parent, name, version or metadata stamp
-    /// changed.
+    /// A new item, or one whose parent, name, version, metadata stamp or
+    /// dates changed.
     case update(ItemIdentifier)
     /// An item that is gone.
     case delete(ItemIdentifier)
