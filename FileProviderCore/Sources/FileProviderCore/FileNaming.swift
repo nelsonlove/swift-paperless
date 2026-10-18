@@ -290,7 +290,8 @@ public enum FileNaming {
   /// extension cut to ``maxExtensionLength`` bytes), and only the stem is cut,
   /// on a character boundary, so a suffix is never cut away.
   static func compose(stem: String, suffix: String, fileExtension: String?) -> String {
-    let tail = suffix + (fileExtension.map { ".\(truncate($0, maxBytes: maxExtensionLength))" } ?? "")
+    let tail =
+      suffix + (fileExtension.map { ".\(truncate($0, maxBytes: maxExtensionLength))" } ?? "")
     let budget = max(0, maxNameBytes - tail.utf8.count)
     var cut = truncate(stem, maxBytes: budget)
     if cut.utf8.count < stem.utf8.count {

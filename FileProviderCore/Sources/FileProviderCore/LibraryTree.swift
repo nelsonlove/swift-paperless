@@ -123,8 +123,10 @@ public struct LibraryTree: Sendable {
       }
       documentsByID[document.id] = document
     }
-    for id in documentsByID.keys.sorted() {
-      builder.add(documentsByID[id]!)
+    // The order of `add` calls does not matter: every folder's name comes
+    // from its key alone, and names are settled per folder in `finish`.
+    for document in documentsByID.values {
+      builder.add(document)
     }
 
     (items, childIDs) = builder.finish()
@@ -185,8 +187,11 @@ public struct LibraryTree: Sendable {
   }
 
   /// The cached document a canonical item or secondary appearance shows.
+  /// `nil` when the identifier is not in the tree, as for ``item(for:)``,
+  /// even if the document it names exists elsewhere in the tree.
   public func document(for identifier: ItemIdentifier) -> Document? {
-    identifier.documentID.flatMap { documentsByID[$0] }
+    guard items[identifier] != nil else { return nil }
+    return identifier.documentID.flatMap { documentsByID[$0] }
   }
 
   /// Every item except the root, in breadth-first order from the root.
@@ -261,14 +266,15 @@ extension LibraryTree {
         documentTypes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
       for browse in settings.browseFolders {
-        let name: String =
+        let label: String =
           switch browse {
           case .tag: labels.byTag
           case .correspondent: labels.byCorrespondent
           case .documentType: labels.byDocumentType
           }
         addFolder(
-          .browseRoot(browse), parent: .root, name: name, disambiguator: browse.rawValue)
+          .browseRoot(browse), parent: .root, disambiguator: browse.rawValue
+        ) { _ in FileNaming.sanitize(label) ?? browse.rawValue }
         nodes[.browseRoot(browse)]?.keepsName = true
       }
     }
@@ -328,16 +334,16 @@ extension LibraryTree {
       if settings.browseFolders.contains(.correspondent), let id = document.correspondent {
         let folder = ItemIdentifier.browseFolder(.correspondent, id: id)
         addFolder(
-          folder, parent: .browseRoot(.correspondent), name: correspondentName(id),
-          disambiguator: String(id))
+          folder, parent: .browseRoot(.correspondent), disambiguator: String(id)
+        ) { $0.correspondentName(id) }
         addDocument(
           .appearance(.correspondent, folderID: id, documentID: document.id), parent: folder)
       }
       if settings.browseFolders.contains(.documentType), let id = document.documentType {
         let folder = ItemIdentifier.browseFolder(.documentType, id: id)
         addFolder(
-          folder, parent: .browseRoot(.documentType), name: documentTypeName(id),
-          disambiguator: String(id))
+          folder, parent: .browseRoot(.documentType), disambiguator: String(id)
+        ) { $0.documentTypeName(id) }
         addDocument(
           .appearance(.documentType, folderID: id, documentID: document.id), parent: folder)
       }
@@ -352,29 +358,31 @@ extension LibraryTree {
         let id = document.correspondent
         let folder = ItemIdentifier.folder(.correspondent(id))
         addFolder(
-          folder, parent: .root, name: correspondentName(id), disambiguator: key(id))
+          folder, parent: .root, disambiguator: key(id)
+        ) { $0.correspondentName(id) }
         return folder
 
       case .documentType:
         let id = document.documentType
         let folder = ItemIdentifier.folder(.documentType(id))
         addFolder(
-          folder, parent: .root, name: documentTypeName(id), disambiguator: key(id))
+          folder, parent: .root, disambiguator: key(id)
+        ) { $0.documentTypeName(id) }
         return folder
 
       case .year:
         let year = LibraryTree.createdYear(document.created)
         let folder = ItemIdentifier.folder(.year(year))
-        addFolder(folder, parent: .root, name: String(year), disambiguator: String(year))
+        addFolder(folder, parent: .root, disambiguator: String(year)) { _ in String(year) }
         return folder
 
       case .correspondentYear:
         let id = document.correspondent
         let year = LibraryTree.createdYear(document.created)
         let outer = ItemIdentifier.folder(.correspondentYear(correspondent: id, year: nil))
-        addFolder(outer, parent: .root, name: correspondentName(id), disambiguator: key(id))
+        addFolder(outer, parent: .root, disambiguator: key(id)) { $0.correspondentName(id) }
         let inner = ItemIdentifier.folder(.correspondentYear(correspondent: id, year: year))
-        addFolder(inner, parent: outer, name: String(year), disambiguator: String(year))
+        addFolder(inner, parent: outer, disambiguator: String(year)) { _ in String(year) }
         return inner
       }
     }
@@ -391,21 +399,24 @@ extension LibraryTree {
         if nodes[identifier] != nil { break }
         let parent: ItemIdentifier =
           tagParents[id].map { .browseFolder(.tag, id: $0) } ?? .browseRoot(.tag)
-        addFolder(identifier, parent: parent, name: tagName(id), disambiguator: String(id))
+        addFolder(identifier, parent: parent, disambiguator: String(id)) { $0.tagName(id) }
         current = tagParents[id]
         steps += 1
       }
       return folder
     }
 
+    /// Adds a folder unless it exists. `stem` returns the already sanitized
+    /// stem and is only called for a new folder; it gets the builder as an
+    /// argument rather than capturing it, which a mutating method may not.
     private mutating func addFolder(
-      _ identifier: ItemIdentifier, parent: ItemIdentifier, name: String,
-      disambiguator: String
+      _ identifier: ItemIdentifier, parent: ItemIdentifier, disambiguator: String,
+      stem: (Builder) -> String
     ) {
       guard nodes[identifier] == nil else { return }
+      let folderStem = stem(self)
       nodes[identifier] = Node(
-        identifier: identifier, parent: parent,
-        stem: FileNaming.sanitize(name) ?? disambiguator, fileExtension: nil,
+        identifier: identifier, parent: parent, stem: folderStem, fileExtension: nil,
         disambiguator: disambiguator, kind: .folder, version: "")
     }
 
@@ -413,13 +424,15 @@ extension LibraryTree {
       id.map { String($0) } ?? "none"
     }
 
+    // The *Name functions return sanitized stems, each sanitized once.
+
     private func correspondentName(_ id: UInt?) -> String {
-      guard let id else { return labels.noCorrespondent }
+      guard let id else { return FileNaming.sanitize(labels.noCorrespondent) ?? "none" }
       return named(correspondentsByID[id]?.name, fallback: labels.unknownCorrespondent, id)
     }
 
     private func documentTypeName(_ id: UInt?) -> String {
-      guard let id else { return labels.noDocumentType }
+      guard let id else { return FileNaming.sanitize(labels.noDocumentType) ?? "none" }
       return named(documentTypesByID[id]?.name, fallback: labels.unknownDocumentType, id)
     }
 
@@ -427,9 +440,11 @@ extension LibraryTree {
       named(tagsByID[id]?.name, fallback: labels.unknownTag, id)
     }
 
+    /// The element's sanitized name, else the sanitized `"<fallback> <id>"`,
+    /// else the id.
     private func named(_ name: String?, fallback: String, _ id: UInt) -> String {
-      if let name, FileNaming.sanitize(name) != nil { return name }
-      return "\(fallback) \(id)"
+      name.flatMap(FileNaming.sanitize) ?? FileNaming.sanitize("\(fallback) \(id)")
+        ?? String(id)
     }
 
     /// Resolves names per folder and sorts each folder's children.

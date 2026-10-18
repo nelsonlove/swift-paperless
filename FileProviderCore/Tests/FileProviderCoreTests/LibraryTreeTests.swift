@@ -280,6 +280,57 @@ struct LibraryTreeTests {
     #expect(tree.names(.root) == ["Acme Utilities (#1)", "Acme Utilities (#5)"])
   }
 
+  @Test("document(for:) is nil for an identifier not in the tree")
+  func documentLookupConsistent() {
+    let tree = Fixtures.tree()
+    #expect(tree.document(for: .document(10))?.id == 10)
+    #expect(tree.document(for: .appearance(.tag, folderID: 1, documentID: 10))?.id == 10)
+    // Document 10 exists, but not under tag 2 or in a folder that does not exist.
+    let missing: [ItemIdentifier] = [
+      .appearance(.tag, folderID: 2, documentID: 10),
+      .appearance(.correspondent, folderID: 999, documentID: 10),
+    ]
+    for identifier in missing {
+      #expect(tree.item(for: identifier) == nil)
+      #expect(tree.document(for: identifier) == nil)
+    }
+    let flat = Fixtures.tree(settings(.flat))
+    #expect(flat.document(for: .appearance(.tag, folderID: 1, documentID: 10)) == nil)
+  }
+
+  @Test("The tree does not depend on the input order of documents")
+  func inputOrder() {
+    let forward = Fixtures.tree().snapshot()
+    let backward = Fixtures.tree(documents: Fixtures.documents.reversed()).snapshot()
+    let shuffled = Fixtures.tree(documents: [
+      Fixtures.documents[3], Fixtures.documents[0], Fixtures.documents[4],
+      Fixtures.documents[2], Fixtures.documents[1],
+    ]).snapshot()
+    #expect(forward == backward)
+    #expect(forward == shuffled)
+  }
+
+  @Test("Labels and element names are sanitized as folder names")
+  func folderNamesSanitized() {
+    let labels = TreeLabels(
+      byTag: "By/tag", byCorrespondent: "\u{202E}", noCorrespondent: "No: one",
+      unknownDocumentType: "Kind/")
+    var correspondents = Fixtures.correspondents
+    correspondents.append(Fixtures.correspondent(8, ".hidden/name"))
+    let documents = [
+      Fixtures.document(1, "One", correspondent: 8, type: 77),
+      Fixtures.document(2, "Two"),
+    ]
+    let tree = LibraryTree(
+      documents: documents, tags: [], correspondents: correspondents, documentTypes: [],
+      settings: FileProviderSettings(layout: .correspondent), labels: labels)
+    #expect(tree.item(for: .browseRoot(.tag))?.name == "By-tag")
+    #expect(tree.item(for: .browseRoot(.correspondent))?.name == "correspondent")
+    #expect(tree.item(for: .folder(.correspondent(nil)))?.name == "No- one")
+    #expect(tree.item(for: .folder(.correspondent(8)))?.name == "hidden-name")
+    #expect(tree.item(for: .browseFolder(.documentType, id: 77))?.name == "Kind- 77")
+  }
+
   @Test("A canonical folder named like a browse root takes the suffix")
   func browseRootKeepsLabel() {
     let documents = [Fixtures.document(1, "Label sheet", correspondent: 9)]

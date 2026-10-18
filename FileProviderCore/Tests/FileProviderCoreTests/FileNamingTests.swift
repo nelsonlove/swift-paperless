@@ -223,11 +223,14 @@ struct FileNamingTests {
   @Test("Identifiers and disambiguators with / and : never reach a name")
   func noSeparatorsInSuffixes() {
     let entries = [
-      FileNaming.Entry(stem: "A", fileExtension: nil, disambiguator: "12/2026",
+      FileNaming.Entry(
+        stem: "A", fileExtension: nil, disambiguator: "12/2026",
         uniqueKey: "dir:correspondentYear:12/2026"),
-      FileNaming.Entry(stem: "A", fileExtension: nil, disambiguator: "12/2026",
+      FileNaming.Entry(
+        stem: "A", fileExtension: nil, disambiguator: "12/2026",
         uniqueKey: "dir:correspondentYear:none/2026"),
-      FileNaming.Entry(stem: "A (#12-2026)", fileExtension: nil, disambiguator: "x:y",
+      FileNaming.Entry(
+        stem: "A (#12-2026)", fileExtension: nil, disambiguator: "x:y",
         uniqueKey: "tag:1/doc:2"),
     ]
     let names = FileNaming.resolveCollisions(entries)
@@ -240,7 +243,8 @@ struct FileNamingTests {
     let ext = String(repeating: "x", count: 240)
     let key = String(repeating: "k", count: 500)
     let entries = (0..<20).map {
-      FileNaming.Entry(stem: "Same", fileExtension: ext, disambiguator: "1",
+      FileNaming.Entry(
+        stem: "Same", fileExtension: ext, disambiguator: "1",
         uniqueKey: "\(key)\($0)")
     }
     let names = FileNaming.resolveCollisions(entries)
