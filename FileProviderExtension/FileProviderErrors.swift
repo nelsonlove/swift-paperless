@@ -15,7 +15,9 @@ import Networking
 /// domains: NSCocoaErrorDomain, NSFileProviderErrorDomain"; one that fits
 /// neither is an NSCocoaErrorDomain NSXPCConnectionReplyInvalid with the
 /// original under NSUnderlyingErrorKey. The same section names
-/// NSFileProviderErrorNoSuchItem for an item deleted on the server,
+/// NSFileProviderErrorNoSuchItem for an item deleted on the server (which a
+/// 404 alone does not show, so this map never gives it; `fetchContents` gives
+/// it after the database confirms the document is gone),
 /// NSFileReadNoPermissionError for content the user may not read, and
 /// NSFileProviderErrorNotAuthenticated and NSFileProviderErrorServerUnreachable
 /// for "the current state of the system / domain"; the Cancellations section
@@ -42,7 +44,10 @@ enum FileProviderErrors {
       case .forbidden:
         return CocoaError(.fileReadNoPermission) as NSError
       case .unexpectedStatusCode(let code, _) where code == .notFound:
-        return NSFileProviderError(.noSuchItem) as NSError
+        // Not noSuchItem, which makes the system delete the item while the
+        // database may still hold it; "the current state of the system /
+        // domain" (fetchContents "Error cases", line 382), so it backs off.
+        return NSFileProviderError(.serverUnreachable) as NSError
       case .connectivity, .localNetworkDenied, .certificate:
         return NSFileProviderError(.serverUnreachable) as NSError
       default:

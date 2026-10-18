@@ -21,10 +21,19 @@ public struct TreeItem: Hashable, Sendable {
   public var name: String
   public var kind: Kind
   /// Changes when the item's content changes. For documents it covers the
-  /// variant actually served (the original when there is no archive), the
-  /// current version id and `modified`; for folders it is
-  /// empty (a folder's name and parent are compared on their own).
+  /// variant actually served (the original when there is no archive) and,
+  /// on a server with document versions, the current version id and that
+  /// version's checksum, not `modified`, which a metadata-only edit (a title,
+  /// a tag) changes too; a new content version makes the system download the
+  /// file again. A server with no version rows (paperless before 3.0) edits a
+  /// file in place (rotate, delete pages, re-OCR) under the same id, so there
+  /// `modified` is the only signal and is used. For folders it is empty (a
+  /// folder's name and parent are compared on their own).
   public var version: String
+  /// The document's dates Files shows (created and `modified`), which a
+  /// metadata edit changes; part of the metadata version, not the content
+  /// version. Empty for folders.
+  public var dates: String
 
   public var isFolder: Bool { kind == .folder }
 
@@ -34,21 +43,23 @@ public struct TreeItem: Hashable, Sendable {
     isFolder ? "folder" : version
   }
 
-  /// The metadata version for File Provider: changes exactly when the parent
-  /// or the name changes, the metadata Files shows for a read-only item.
+  /// The metadata version for File Provider: changes exactly when the parent,
+  /// the name or the dates change, the metadata Files shows for a read-only
+  /// item.
   public var metadataVersion: String {
-    "\(parent.stringValue)\n\(name)"
+    "\(parent.stringValue)\n\(name)\n\(dates)"
   }
 
   public init(
     identifier: ItemIdentifier, parent: ItemIdentifier, name: String, kind: Kind,
-    version: String
+    version: String, dates: String = ""
   ) {
     self.identifier = identifier
     self.parent = parent
     self.name = name
     self.kind = kind
     self.version = version
+    self.dates = dates
   }
 }
 
@@ -286,6 +297,37 @@ public struct LibraryTree: Sendable {
 // MARK: - Building
 
 extension LibraryTree {
+  /// A document's content version (``TreeItem/version``): the variant
+  /// served, then either the current version id and its checksum (when the
+  /// document has version rows, so a metadata-only edit keeps it) or, with no
+  /// version rows, `modified` (an in-place edit keeps the id, so `modified`
+  /// is the only sign the file changed).
+  public static func contentVersion(
+    for document: Document, content: FileProviderSettings.Content
+  ) -> String {
+    let served = FileNaming.servedContent(for: document, requested: content)
+    let versionID = document.currentVersionID
+    guard let current = document.versions.first(where: { $0.id == versionID }) else {
+      return "\(served.rawValue):\(versionID)@\(modifiedStamp(of: document))"
+    }
+    var version = "\(served.rawValue):v\(versionID)"
+    if let checksum = current.checksum, !checksum.isEmpty {
+      version += "/\(checksum)"
+    }
+    return version
+  }
+
+  /// A document's dates (``TreeItem/dates``): created and `modified`.
+  public static func dates(of document: Document) -> String {
+    "\(document.created.timeIntervalSinceReferenceDate)/\(modifiedStamp(of: document))"
+  }
+
+  /// A document's `modified` as the versions carry it: seconds since the
+  /// reference date, or "-" when the document has none.
+  static func modifiedStamp(of document: Document) -> String {
+    document.modified.map { String($0.timeIntervalSinceReferenceDate) } ?? "-"
+  }
+
   private struct Node {
     var identifier: ItemIdentifier
     var parent: ItemIdentifier
@@ -294,6 +336,7 @@ extension LibraryTree {
     var disambiguator: String
     var kind: TreeItem.Kind
     var version: String
+    var dates = ""
     /// Browse roots keep their label; a canonical folder of the same name
     /// takes the collision suffix instead.
     var keepsName = false
@@ -367,14 +410,13 @@ extension LibraryTree {
     mutating func add(_ document: Document) {
       let stem = FileNaming.stem(for: document, untitled: labels.untitledDocument)
       let fileExtension = FileNaming.fileExtension(for: document, content: settings.content)
-      let modified = document.modified.map { String($0.timeIntervalSinceReferenceDate) } ?? "-"
-      let served = FileNaming.servedContent(for: document, requested: settings.content)
-      let version = "\(served.rawValue):\(document.currentVersionID)/\(modified)"
+      let version = LibraryTree.contentVersion(for: document, content: settings.content)
+      let dates = LibraryTree.dates(of: document)
 
       func addDocument(_ identifier: ItemIdentifier, parent: ItemIdentifier) {
         nodes[identifier] = Node(
           identifier: identifier, parent: parent, stem: stem, fileExtension: fileExtension,
-          disambiguator: String(document.id), kind: .document, version: version)
+          disambiguator: String(document.id), kind: .document, version: version, dates: dates)
       }
 
       addDocument(.document(document.id), parent: canonicalParent(of: document))
@@ -525,7 +567,7 @@ extension LibraryTree {
         for (node, name) in zip(children, names) {
           let item = TreeItem(
             identifier: node.identifier, parent: parent, name: name, kind: node.kind,
-            version: node.version)
+            version: node.version, dates: node.dates)
           items[node.identifier] = item
           resolved.append(item)
         }

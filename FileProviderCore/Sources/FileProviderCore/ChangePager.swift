@@ -38,14 +38,33 @@ public struct ChangeState: Codable, Equatable, Sendable {
   public var anchor: Data { ChangePager.anchor(epoch: epoch, counter: counter) }
 }
 
-/// Answers `enumerateChanges` one run of a ``TreeDiff`` per call.
+/// Answers `enumerateChanges` one run of a ``TreeDiff`` per call, or one batch
+/// of a run larger than the batch size.
 ///
 /// Each call reports the first non-empty run between the stored snapshot and
-/// the current tree, advances the anchor, and stores the snapshot as it stands
-/// after that run, so the next call starts after it and never resends it. The
-/// caller ends each page with `finishEnumeratingChanges(upTo:moreComing:)`,
-/// `moreComing` being true while more runs remain; the page break is what
-/// orders the runs (see ``TreeDiff``).
+/// the current tree (at most `batchSize` changes of it), advances the anchor,
+/// and stores the snapshot as it stands after what it sent, so the next call
+/// starts after it and never resends it. The caller ends each page with
+/// `finishEnumeratingChanges(upTo:moreComing:)`, `moreComing` being true while
+/// changes remain; the page break is what orders the runs (see ``TreeDiff``).
+/// The system suggests a batch size (NSFileProviderEnumerating.h,
+/// `suggestedBatchSize`, lines 116-132 in the iOS 26.5 SDK: "it is suggested
+/// it split the list of changes into several batches").
+///
+/// Within one burst (one library read) the diff is computed once: each page
+/// returns the runs that remain (``Page/remaining``), and the next page of the
+/// burst passes them back as its `plan` and slices them, so a cut run goes on
+/// where it stopped, in its order. A page with no plan (a new burst, a newer
+/// read) diffs the stored snapshot against the tree afresh and starts with
+/// its first non-empty run: deletions that are safe now, including any a
+/// newer read added, go before the rest of a cut updates run, so a sibling
+/// renamed to a deleted item's name never shares it with that item.
+///
+/// An updates run is never cut inside a group of updates that take each
+/// other's places (two siblings that swap names, a chain where one takes the
+/// name another gives up): the page goes on to the end of the group, past the
+/// batch size if it must, so no page boundary shows two siblings with one
+/// name.
 public enum ChangePager {
   public enum Failure: Error, Equatable {
     /// The anchor is unknown, from another state, or from the stub
@@ -54,15 +73,20 @@ public enum ChangePager {
   }
 
   public struct Page: Equatable, Sendable {
-    /// The run to report: all updates or all deletions. Empty when the system
-    /// is up to date.
+    /// The changes to report, from one run: all updates or all deletions, at
+    /// most the batch size unless a group of updates that take each other's
+    /// places runs past it. Empty when the system is up to date.
     public var run: [TreeDiff.Change]
     /// The anchor to finish the page with.
     public var anchor: Data
-    /// Whether another run remains after this one.
+    /// Whether changes remain after this page.
     public var moreComing: Bool
-    /// The state to persist before finishing the page.
+    /// The state to persist before finishing the page. When ``run`` is empty
+    /// it is the state passed in, and need not be saved again.
     public var state: ChangeState
+    /// The runs left after this page, from ``state``'s snapshot to the same
+    /// tree: the `plan` for the next page of the burst.
+    public var remaining: [[TreeDiff.Change]]
   }
 
   static let anchorPrefix = "fp1:"
@@ -79,41 +103,112 @@ public enum ChangePager {
     ChangeState(epoch: epoch, counter: 1, snapshot: current)
   }
 
-  /// The next page of changes from `anchor`.
+  /// The next page of changes from `anchor`, at most `batchSize` changes
+  /// (a size below 1 counts as 1), or more to keep a group of updates that
+  /// take each other's places whole (see ``cut(_:at:base:current:)``).
   ///
+  /// - Parameter plan: the ``Page/remaining`` runs of the previous page of
+  ///   this burst, valid only for the same `state` and `current`; used when
+  ///   `anchor` is the state's current anchor, in place of a new diff.
   /// - Throws: ``Failure/anchorExpired`` unless `anchor` is the state's
   ///   current or previous anchor.
   public static func nextPage(
-    state: ChangeState, from anchor: Data, current: TreeSnapshot
+    state: ChangeState, from anchor: Data, current: TreeSnapshot, batchSize: Int = .max,
+    plan: [[TreeDiff.Change]]? = nil
   ) throws -> Page {
     let base: TreeSnapshot
     let baseCounter: UInt64
+    let runs: [[TreeDiff.Change]]
+    let fromPrevious: Bool
     if anchor == state.anchor {
       base = state.snapshot
       baseCounter = state.counter
+      runs = plan ?? TreeDiff(from: base, to: current).runs
+      fromPrevious = false
     } else if let previousCounter = state.previousCounter,
       let previousSnapshot = state.previousSnapshot,
       anchor == Self.anchor(epoch: state.epoch, counter: previousCounter)
     {
       base = previousSnapshot
       baseCounter = previousCounter
+      runs = TreeDiff(from: base, to: current).runs
+      fromPrevious = true
     } else {
       throw Failure.anchorExpired
     }
 
-    let diff = TreeDiff(from: base, to: current)
-    guard let run = diff.runs.first(where: { !$0.isEmpty }) else {
+    guard let index = runs.firstIndex(where: { !$0.isEmpty }) else {
       // Up to date: the same anchor, nothing more (the header expects the
       // anchor to change only when something was reported).
-      return Page(run: [], anchor: anchor, moreComing: false, state: state)
+      return Page(run: [], anchor: anchor, moreComing: false, state: state, remaining: [])
     }
 
-    let after = base.applying(run: run, from: current)
-    let next = ChangeState(
-      epoch: state.epoch, counter: max(state.counter, baseCounter) + 1, snapshot: after,
-      previousCounter: baseCounter, previousSnapshot: base)
-    let moreComing = !TreeDiff(from: after, to: current).isEmpty
-    return Page(run: run, anchor: next.anchor, moreComing: moreComing, state: next)
+    let full = runs[index]
+    let end = cut(full, at: max(1, batchSize), base: base, current: current)
+    let run = Array(full.prefix(end))
+    var remaining = runs
+    remaining[index] = Array(full.dropFirst(run.count))
+
+    var next = state
+    next.counter = max(state.counter, baseCounter) + 1
+    next.snapshot = base.applying(run: run, from: current)
+    if !fromPrevious {
+      // The base becomes the previous state. Asked again from the previous
+      // anchor, the previous state is the base already and stays as it is.
+      next.previousCounter = baseCounter
+      next.previousSnapshot = base
+    }
+    let moreComing = remaining.contains { !$0.isEmpty }
+    return Page(
+      run: run, anchor: next.anchor, moreComing: moreComing, state: next,
+      remaining: moreComing ? remaining : [])
+  }
+
+  /// Where to end a page of `run` that wants `proposed` changes: `proposed`,
+  /// moved later until no group of updates that take each other's places is
+  /// split. Update U and update V are in one group when U's new place (its
+  /// new parent and name, compared as the file system compares names) is
+  /// where V is in `base`, so sending U without V would put two items in
+  /// one place.
+  static func cut(
+    _ run: [TreeDiff.Change], at proposed: Int, base: TreeSnapshot, current: TreeSnapshot
+  ) -> Int {
+    guard proposed < run.count else { return run.count }
+    func place(_ entry: TreeSnapshot.Entry) -> String {
+      "\(entry.parent.stringValue)\u{0}\(FileNaming.comparisonKey(entry.name))"
+    }
+    var group = Array(run.indices)
+    func root(_ index: Int) -> Int {
+      var index = index
+      while group[index] != index {
+        group[index] = group[group[index]]
+        index = group[index]
+      }
+      return index
+    }
+    var atBasePlace: [String: [Int]] = [:]
+    for (index, change) in run.enumerated() {
+      guard case .update(let id) = change, let old = base.entries[id] else { continue }
+      atBasePlace[place(old), default: []].append(index)
+    }
+    guard !atBasePlace.isEmpty else { return proposed }
+    for (index, change) in run.enumerated() {
+      guard case .update(let id) = change, let new = current.entries[id] else { continue }
+      for other in atBasePlace[place(new)] ?? [] where other != index {
+        group[root(other)] = root(index)
+      }
+    }
+    var last: [Int: Int] = [:]
+    for index in run.indices {
+      last[root(index)] = index
+    }
+    var end = proposed
+    var index = 0
+    while index < end {
+      end = max(end, last[root(index)]! + 1)
+      index += 1
+    }
+    return end
   }
 }
 

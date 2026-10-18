@@ -19,8 +19,9 @@ import os
 /// reads it through ``ExtensionContext`` and shapes it with FileProviderCore's
 /// `LibraryTree`. Content comes from the app-group content store when fresh,
 /// else from the server through the server's repository, and is handed over as
-/// an APFS clone. Read-only enforcement follows upstream issue #727 Stage 4:
-/// items carry no write capabilities, `createItem` fails with
+/// an APFS clone, or a copy where the volume cannot clone. Read-only
+/// enforcement follows upstream issue #727 Stage 4: items carry no write
+/// capabilities, `createItem` fails with
 /// `.cannotSynchronize` (keeping the user's file), `modifyItem` reverts a
 /// known item and fails others with `.cannotSynchronize`, and `deleteItem`
 /// rejects deleting a known item. Every error code is the one the SDK header
@@ -52,6 +53,10 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     Self.logger.info(
       "File Provider extension started for domain \(domain.identifier.rawValue, privacy: .public)")
     sweepTemporaryDirectory()
+    // A download that bypassed the content store left a folder of its own in
+    // this process's temporary directory (`ApiRepository.fetchToTemp`); the
+    // hand-over removes it, so only a crash between the two leaves one.
+    Task.detached(priority: .utility) { ApiRepository.sweepTemporaryDownloads() }
     signalIfStateIsMissing()
   }
 
@@ -245,8 +250,22 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
       throw NSFileProviderError(.noSuchItem)
     }
 
-    let source = try await context.work {
-      try await Self.content(of: document, context: context, progress: progress)
+    let source: URL
+    do {
+      source = try await context.work {
+        try await Self.content(of: document, context: context, progress: progress)
+      }
+    } catch is DocumentDownloadNotFound {
+      throw try await Self.answerDownloadNotFound(document, context: context)
+    }
+    // A download that bypassed the content store (no store, or no `modified`
+    // to validate it by) left a temporary file of its own, in a folder of its
+    // own (`ApiRepository.fetchToTemp`); once handed over (or if the hand-over
+    // fails at any step) it is not needed. The store's own files stay.
+    let storeRoot = context.contentStore?.root.standardizedFileURL.path
+    let isDownload = storeRoot.map { !source.standardizedFileURL.path.hasPrefix($0) } ?? true
+    defer {
+      if isDownload { Self.removeDownload(source) }
     }
     guard let manager = NSFileProviderManager(for: context.domain) else {
       throw NSFileProviderError(.serverUnreachable)
@@ -254,22 +273,28 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     let destination = try manager.temporaryDirectoryURL()
       .appendingPathComponent(UUID().uuidString, isDirectory: false)
       .appendingPathExtension((item.filename as NSString).pathExtension)
-    // clonefile(2) rather than FileManager.copyItem, so a fall back to a byte
-    // copy cannot go unnoticed: "The system clones and unlinks the received
+    // A clone first: "The system clones and unlinks the received
     // fileContents" and the content store keeps its own file (header, "File
-    // ownership").
-    let cloned = clonefile(source.path, destination.path, 0)
-    let cloneError = errno
-    // A download that bypassed the content store (no store, or no `modified`
-    // to validate it by) left a temporary file of its own, in a folder of its
-    // own (`ApiRepository.fetchToTemp`); the clone is the only copy needed.
-    // The store's own files stay.
-    let storeRoot = context.contentStore?.root.standardizedFileURL.path
-    if storeRoot.map({ !source.standardizedFileURL.path.hasPrefix($0) }) ?? true {
-      Self.removeDownload(source)
+    // ownership"). Where the clone cannot be made (another volume, a file
+    // system or sandbox that refuses it), a copy, so the open still succeeds;
+    // the log says which, so a copy is never unnoticed.
+    // Off the main actor: a copy of a large file takes a while. Cancelling
+    // the fetch cancels the hand-over, which then leaves no file behind.
+    let handover = Task.detached(priority: .userInitiated) {
+      try ContentHandover.place(source, at: destination, isCancelled: { Task.isCancelled })
     }
-    guard cloned == 0 else {
-      throw POSIXError(POSIXErrorCode(rawValue: cloneError) ?? .EIO)
+    let method = try await withTaskCancellationHandler {
+      try await handover.value
+    } onCancel: {
+      handover.cancel()
+    }
+    if method == .clone {
+      logger.debug(
+        "File Provider: handed over document \(document.id, privacy: .public) as a clone")
+    } else {
+      logger.notice(
+        "File Provider: clone failed; handed over document \(document.id, privacy: .public) by \(method.rawValue, privacy: .public)"
+      )
     }
     progress.completedUnitCount = 100
     return (destination, item)
@@ -287,6 +312,10 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
   /// 4. Otherwise a download through the repository (`download` revalidates a
   ///    stored copy with the server); when the server cannot be reached or
   ///    refuses the credentials or the certificate, the stored copy.
+  ///
+  /// Reading the server row and building the repository can fail for reasons
+  /// of this device, not of the document (a locked device's keychain, a
+  /// database the app holds): any such error serves the stored copy too.
   @MainActor
   private static func content(
     of document: Document, context: ExtensionContext, progress: Progress
@@ -296,7 +325,22 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     if let stored, stored.isFresh {
       return stored.url
     }
-    guard let server = try context.serverRow() else {
+    /// The stored copy in place of `error`, if there is one; a cancellation
+    /// stays a cancellation.
+    func storedCopy(insteadOf error: any Error, _ step: String) throws -> URL {
+      guard !error.isCancellationError, let stored else { throw error }
+      logger.info(
+        "\(step, privacy: .public) failed (\(error)); serving the cached copy of document \(document.id, privacy: .public)"
+      )
+      return stored.url
+    }
+    let row: ServerRow?
+    do {
+      row = try await context.serverRow()
+    } catch {
+      return try storedCopy(insteadOf: error, "Reading the server row")
+    }
+    guard let server = row else {
       // The server row is gone: nothing can be fetched.
       throw NSFileProviderError(.notAuthenticated)
     }
@@ -311,8 +355,13 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
       )
       return stored.url
     }
+    let repository: any Repository & CachingBackend
     do {
-      let repository = try await context.repository(for: server)
+      repository = try await context.repository(for: server)
+    } catch {
+      return try storedCopy(insteadOf: error, "Building the repository")
+    }
+    do {
       // `download` answers from the content store without the network when
       // the cached file matches `modified`, and otherwise downloads into the
       // store (ApiRepository.streamDownload).
@@ -326,6 +375,9 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
       // outdated cached copy beats none. Any other error (the document is
       // gone, access denied) is the answer.
       switch error {
+      case .unexpectedStatusCode(let code, _) where code == .notFound:
+        // The download's own 404: `fetch` decides with the database.
+        throw DocumentDownloadNotFound()
       case .connectivity, .unauthorized, .certificate, .localNetworkDenied:
         guard let stored else { throw error }
         logger.info(
@@ -338,14 +390,86 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     }
   }
 
+  /// The answer to a 404 from the download of `document`'s file (see
+  /// `NotFoundAnswer`). The download's 404 alone does not say the document is
+  /// gone, and NSFileProviderErrorNoSuchItem makes the system delete the item
+  /// ("the system will consider the item has been removed from the domain and
+  /// will attempt to delete it from disk", fetchContents "Error cases", line
+  /// 371). So the database is read again, and if it still holds the
+  /// document, the server is asked for the document itself (a read; nothing
+  /// is written to the server or to the cache): a 404 there too means the
+  /// document is gone. A document the server still has under another current
+  /// version means the local row is out of date: the answer keeps the item
+  /// (NSFileProviderErrorServerUnreachable, "the current state of the system
+  /// / domain", line 382) and the working set is signalled, so the change is
+  /// picked up once the app's next sync updates the row. A 404 from anything
+  /// else (building the repository probes the server's versions) never comes
+  /// here: FileProviderErrors maps it to serverUnreachable.
+  @MainActor
+  private static func answerDownloadNotFound(_ document: Document, context: ExtensionContext)
+    async throws -> NSError
+  {
+    let inDatabase: Bool
+    do {
+      inDatabase = try await context.work { try await context.documentInDatabase(document.id) }
+    } catch let error where error.isCancellationError {
+      throw error
+    } catch {
+      // A database that cannot be read confirms nothing.
+      inDatabase = true
+    }
+    var server: NotFoundAnswer.ServerDocument?
+    if inDatabase {
+      server = try await context.work { try await serverDocument(document.id, context: context) }
+    }
+    let answer = NotFoundAnswer.answer(
+      inDatabase: inDatabase, server: server, localVersionID: document.currentVersionID)
+    logger.notice(
+      "File Provider: download of document \(document.id, privacy: .public) answered 404; in the database: \(inDatabase, privacy: .public), on the server: \(String(describing: server), privacy: .public)"
+    )
+    switch answer {
+    case .noSuchItem:
+      return NSFileProviderError(.noSuchItem) as NSError
+    case .serverUnreachable(let signal):
+      if signal, let manager = NSFileProviderManager(for: context.domain) {
+        do {
+          try await manager.signalEnumerator(for: .workingSet)
+        } catch {
+          logger.error("File Provider: signalling the working set failed: \(error)")
+        }
+      }
+      return NSFileProviderError(.serverUnreachable) as NSError
+    }
+  }
+
+  /// What the server says about document `id` itself, read without the
+  /// cache. Errors other than a cancellation are `.unknown`.
+  @MainActor
+  private static func serverDocument(_ id: UInt, context: ExtensionContext) async throws
+    -> NotFoundAnswer.ServerDocument
+  {
+    do {
+      guard let server = try await context.serverRow(), !server.needsAuth else { return .unknown }
+      let repository = try await context.repository(for: server)
+      guard let fetched = try await repository.serverDocument(id: id) else { return .gone }
+      return .present(currentVersionID: fetched.currentVersionID)
+    } catch let error where error.isCancellationError {
+      throw error
+    } catch {
+      logger.info(
+        "File Provider: asking the server for document \(id, privacy: .public) failed: \(error)")
+      return .unknown
+    }
+  }
+
   /// Removes a downloaded file that is not the content store's, and the
   /// folder of its own `ApiRepository.fetchToTemp` put it in.
   private static func removeDownload(_ file: URL) {
     let folder = file.deletingLastPathComponent()
-    let temporary = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    let downloads = ApiRepository.temporaryDownloadsDirectory
     if UUID(uuidString: folder.lastPathComponent) != nil,
       folder.deletingLastPathComponent().standardizedFileURL.path
-        == temporary.standardizedFileURL.path
+        == downloads.standardizedFileURL.path
     {
       try? FileManager.default.removeItem(at: folder)
     } else {
@@ -405,12 +529,21 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
       // versions were never learned (building the repository would first
       // probe them), shows no thumbnail rather than wait.
       data = try await context.work { () async throws -> Data? in
-        guard let server = try context.serverRow(), !server.needsAuth,
+        guard let server = try await context.serverRow(), !server.needsAuth,
           server.stored.knownVersions != nil
         else { return nil }
         let repository = try await context.repository(for: server)
-        return try await NetworkTransfer.$category.withValue(.thumbnails) {
-          try await repository.thumbnailData(document: document)
+        do {
+          return try await NetworkTransfer.$category.withValue(.thumbnails) {
+            try await repository.thumbnailData(document: document)
+          }
+        } catch RequestError.unexpectedStatusCode(let code, _) where code == .notFound {
+          // The server has no thumbnail: "If there is no thumbnail for a given
+          // item, the perThumbnailCompletionHandler should be called with its
+          // imageData and error parameters both set to nil."
+          // (NSFileProviderReplicatedExtension.h, fetchThumbnails, lines
+          // 1080-1082 in the iOS 26.5 SDK.)
+          return nil
         }
       }
     }
@@ -535,6 +668,11 @@ final class ContextHolder: @unchecked Sendable {
 
   @MainActor lazy var context = ExtensionContext(domain: domain)
 }
+
+/// The download of a document's file answered 404, as opposed to any other
+/// request (building the repository, a version probe); see
+/// `NotFoundAnswer`.
+struct DocumentDownloadNotFound: Error {}
 
 /// Calls a completion handler at most once, whichever path gets there first.
 final class Once: @unchecked Sendable {

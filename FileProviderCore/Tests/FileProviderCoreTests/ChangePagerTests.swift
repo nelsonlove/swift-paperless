@@ -252,3 +252,221 @@ struct SnapshotMetadataTests {
     #expect(try JSONDecoder().decode(TreeSnapshot.self, from: data) == snapshot)
   }
 }
+
+@Suite
+struct ChangePagerBatchTests {
+  /// Every page from the state's anchor until the system is up to date, as one
+  /// burst: each page passes the previous page's remaining runs as its plan.
+  private func drain(
+    _ state: ChangeState, to current: TreeSnapshot, batchSize: Int, burst: Bool = true
+  ) throws -> [ChangePager.Page] {
+    var pages: [ChangePager.Page] = []
+    var state = state
+    var anchor = state.anchor
+    var plan: [[TreeDiff.Change]]?
+    while true {
+      let page = try ChangePager.nextPage(
+        state: state, from: anchor, current: current, batchSize: batchSize, plan: plan)
+      if page.run.isEmpty { break }
+      pages.append(page)
+      #expect(page.run.count <= batchSize)
+      state = page.state
+      anchor = page.anchor
+      plan = burst ? page.remaining : nil
+      #expect(pages.count < 1000)
+    }
+    return pages
+  }
+
+  /// The fixture library after Acme's documents are deleted, Northwind is
+  /// renamed "Acme Utilities" and City Library's only document moves to
+  /// Northwind.
+  private func scenario() -> (old: TreeSnapshot, new: TreeSnapshot) {
+    var documents = Fixtures.documents.filter { $0.correspondent != 1 }
+    documents[documents.firstIndex { $0.id == 12 }!].correspondent = 2
+    var correspondents = Fixtures.correspondents
+    correspondents[1].name = "Acme Utilities"
+    let new = LibraryTree(
+      documents: documents, tags: Fixtures.tags, correspondents: correspondents,
+      documentTypes: Fixtures.documentTypes
+    ).snapshot()
+    return (Fixtures.tree().snapshot(), new)
+  }
+
+  /// Whether two items under one parent share a name.
+  private func hasDuplicateNames(_ snapshot: TreeSnapshot) -> Bool {
+    var seen = Set<String>()
+    for entry in snapshot.entries.values
+    where !seen.insert("\(entry.parent.stringValue)/\(entry.name)").inserted {
+      return true
+    }
+    return false
+  }
+
+  @Test("A run larger than the batch is sent in order across calls, exactly once")
+  func largeRunInBatches() throws {
+    let new = Fixtures.tree().snapshot()
+    let state = ChangePager.initialState(current: TreeSnapshot(), epoch: "e")
+    let updates = TreeDiff(from: TreeSnapshot(), to: new).runs[1]
+    #expect(updates.count > 3)
+
+    let pages = try drain(state, to: new, batchSize: 3)
+    #expect(pages.flatMap(\.run) == updates)
+    let allButLastMore = pages.dropLast().allSatisfy { $0.moreComing }
+    #expect(allButLastMore)
+    #expect(pages.last?.moreComing == false)
+    #expect(pages.last?.state.snapshot == new)
+  }
+
+  @Test(
+    "Within a burst, batched pages send every run in diff order, each change once",
+    arguments: [1, 2, 5])
+  func everyRunInBatches(_ batchSize: Int) throws {
+    let (old, new) = scenario()
+    let diff = TreeDiff(from: old, to: new)
+    let pages = try drain(
+      ChangePager.initialState(current: old, epoch: "e"), to: new, batchSize: batchSize)
+    #expect(pages.flatMap(\.run) == diff.changes)
+    #expect(pages.last?.state.snapshot == new)
+  }
+
+  @Test("Across bursts (no plan), every change is sent exactly once", arguments: [1, 2, 5])
+  func everyChangeOnceAcrossBursts(_ batchSize: Int) throws {
+    let (old, new) = scenario()
+    let diff = TreeDiff(from: old, to: new)
+    let pages = try drain(
+      ChangePager.initialState(current: old, epoch: "e"), to: new, batchSize: batchSize,
+      burst: false)
+    let sent = pages.flatMap(\.run)
+    #expect(sent.count == diff.changes.count)
+    #expect(Set(sent) == Set(diff.changes))
+    #expect(pages.last?.state.snapshot == new)
+  }
+
+  @Test("A page with a plan does not diff: it slices the plan")
+  func planIsSliced() throws {
+    let (old, new) = scenario()
+    let state = ChangePager.initialState(current: old, epoch: "e")
+    let only: [[TreeDiff.Change]] = [[], [.update(.document(11))], []]
+    let page = try ChangePager.nextPage(
+      state: state, from: state.anchor, current: new, batchSize: 5, plan: only)
+    #expect(page.run == [.update(.document(11))])
+    #expect(!page.moreComing)
+  }
+
+  @Test("Asked again from the previous anchor, the previous state is kept as it is")
+  func previousKept() throws {
+    let (old, new) = scenario()
+    let state = ChangePager.initialState(current: old, epoch: "e")
+    let first = try ChangePager.nextPage(
+      state: state, from: state.anchor, current: new, batchSize: 2)
+    let again = try ChangePager.nextPage(
+      state: first.state, from: state.anchor, current: new, batchSize: 2)
+    #expect(again.state.previousSnapshot == first.state.previousSnapshot)
+    #expect(again.state.previousCounter == first.state.previousCounter)
+    #expect(again.run == first.run)
+  }
+
+  @Test(
+    "A new safe deletion from a newer read goes before the rest of a cut updates run, so no two siblings share a name"
+  )
+  func newSafeDeletionBeforeResumedUpdates() throws {
+    // Burst 1: a new library adds every item (one updates run), cut by the batch.
+    let start = LibraryTree(
+      documents: Fixtures.documents, tags: Fixtures.tags,
+      correspondents: Fixtures.correspondents, documentTypes: Fixtures.documentTypes
+    ).snapshot()
+    let state = ChangePager.initialState(current: TreeSnapshot(), epoch: "e")
+    // Cut the run just after the "Acme Utilities" folder, so the system has it.
+    let updates = TreeDiff(from: TreeSnapshot(), to: start).runs[1]
+    let acme = try #require(
+      updates.firstIndex {
+        guard case .update(let id) = $0, let entry = start.entries[id] else { return false }
+        return entry.isFolder && entry.name == "Acme Utilities"
+      })
+    let first = try ChangePager.nextPage(
+      state: state, from: state.anchor, current: start, batchSize: acme + 1)
+    #expect(first.moreComing)
+    #expect(first.state.snapshot.entries.values.contains { $0.name == "Acme Utilities" })
+
+    // A newer read: correspondent Acme and its documents are gone (a safe
+    // deletion), and Northwind is renamed "Acme Utilities", Acme's name.
+    var correspondents = Fixtures.correspondents.filter { $0.id != 1 }
+    correspondents[0].name = "Acme Utilities"
+    let newer = LibraryTree(
+      documents: Fixtures.documents.filter { $0.correspondent != 1 }, tags: Fixtures.tags,
+      correspondents: correspondents, documentTypes: Fixtures.documentTypes
+    ).snapshot()
+
+    // Every page from here, with the newer library (no plan from burst 1).
+    var current = first.state
+    var anchor = first.anchor
+    var plan: [[TreeDiff.Change]]?
+    var sawDeletionFirst: Bool?
+    while true {
+      let page = try ChangePager.nextPage(
+        state: current, from: anchor, current: newer, batchSize: 4, plan: plan)
+      if page.run.isEmpty { break }
+      if sawDeletionFirst == nil, case .delete = page.run[0] { sawDeletionFirst = true }
+      if sawDeletionFirst == nil { sawDeletionFirst = false }
+      #expect(!hasDuplicateNames(page.state.snapshot))
+      current = page.state
+      anchor = page.anchor
+      plan = page.remaining
+    }
+    #expect(sawDeletionFirst == true)
+    #expect(current.snapshot == newer)
+  }
+
+  private func documents(_ names: [UInt: String]) -> TreeSnapshot {
+    var entries: [ItemIdentifier: TreeSnapshot.Entry] = [:]
+    for (id, name) in names {
+      entries[.document(id)] = TreeSnapshot.Entry(
+        parent: .root, name: name, version: "v", isFolder: false)
+    }
+    return TreeSnapshot(entries: entries)
+  }
+
+  /// Drains with batch size 1 and checks every page boundary.
+  private func drainChecked(from old: TreeSnapshot, to new: TreeSnapshot) throws
+    -> [ChangePager.Page]
+  {
+    var pages: [ChangePager.Page] = []
+    var state = ChangePager.initialState(current: old, epoch: "e")
+    var anchor = state.anchor
+    while true {
+      let page = try ChangePager.nextPage(state: state, from: anchor, current: new, batchSize: 1)
+      if page.run.isEmpty { break }
+      #expect(!hasDuplicateNames(page.state.snapshot))
+      pages.append(page)
+      state = page.state
+      anchor = page.anchor
+    }
+    #expect(state.snapshot == new)
+    return pages
+  }
+
+  @Test("Two siblings that swap names are sent in one page, even with batch size 1")
+  func swapNotCut() throws {
+    let old = documents([1: "A.pdf", 2: "B.pdf", 3: "C.pdf"])
+    let new = documents([1: "B.pdf", 2: "A.pdf", 3: "D.pdf"])
+    let pages = try drainChecked(from: old, to: new)
+    #expect(pages.first?.run == [.update(.document(1)), .update(.document(2))])
+    // The unrelated rename still goes in a batch of its own.
+    #expect(pages.count == 2)
+  }
+
+  @Test("A chain of names is sent in one page, even with batch size 1")
+  func chainNotCut() throws {
+    // 1 takes 2's name, 2 takes 3's, 3 takes a new one; names compare as the
+    // file system does, so "b.pdf" takes the place of "B.pdf".
+    let old = documents([1: "A.pdf", 2: "B.pdf", 3: "C.pdf", 4: "Z.pdf"])
+    let new = documents([1: "b.pdf", 2: "C.pdf", 3: "D.pdf", 4: "Y.pdf"])
+    let pages = try drainChecked(from: old, to: new)
+    #expect(
+      pages.first?.run == [
+        .update(.document(1)), .update(.document(2)), .update(.document(3)),
+      ])
+    #expect(pages.count == 2)
+  }
+}

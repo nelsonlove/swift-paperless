@@ -929,6 +929,52 @@ extension ApiRepository: Repository {
     }
   }
 
+  /// How old a ``fetchToTemp`` folder must be before
+  /// ``sweepTemporaryDownloads(olderThan:in:now:)`` removes it: the app hands
+  /// the file to a preview or a share sheet and does not know when they are
+  /// done, so a folder is only taken once it is surely no longer in use.
+  public nonisolated static let temporaryDownloadLifetime: TimeInterval = 24 * 60 * 60
+
+  /// The folder ``fetchToTemp`` puts its download folders in, one
+  /// UUID-named folder per download: `paperless-downloads` in the process's
+  /// temporary directory. Nothing else is put there, so the sweep can never
+  /// take another component's files.
+  public nonisolated static var temporaryDownloadsDirectory: URL {
+    URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+      .appendingPathComponent("paperless-downloads", isDirectory: true)
+  }
+
+  /// Removes the folders ``fetchToTemp`` made (UUID-named folders in
+  /// ``temporaryDownloadsDirectory``) that are older than `age`, and returns
+  /// how many it removed. The app calls it at launch and the File Provider
+  /// extension at init. Nothing outside that folder is touched.
+  @discardableResult
+  public nonisolated static func sweepTemporaryDownloads(
+    olderThan age: TimeInterval = temporaryDownloadLifetime,
+    in directory: URL = temporaryDownloadsDirectory,
+    now: Date = Date()
+  ) -> Int {
+    let fileManager = FileManager.default
+    guard
+      let entries = try? fileManager.contentsOfDirectory(
+        at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey])
+    else { return 0 }
+    let cutoff = now.addingTimeInterval(-age)
+    var removed = 0
+    for url in entries where UUID(uuidString: url.lastPathComponent) != nil {
+      let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey])
+      guard values?.isDirectory == true,
+        let modified = values?.contentModificationDate, modified < cutoff
+      else { continue }
+      if (try? fileManager.removeItem(at: url)) != nil { removed += 1 }
+    }
+    if removed > 0 {
+      Logger.networking.info(
+        "Removed \(removed, privacy: .public) stale download folder(s) from the temporary directory")
+    }
+    return removed
+  }
+
   private func fetchToTemp(
     documentID: UInt, original: Bool, version: UInt?,
     progress: (@Sendable (Double) -> Void)?
@@ -942,17 +988,31 @@ extension ApiRepository: Repository {
     } catch {
       throw RequestError.normalizingTransportFailure(error, path: NetworkPathProbe.sample())
     }
-    try validateDownloadResponse(response, request: request)
+    do {
+      try validateDownloadResponse(response, request: request)
+    } catch {
+      // URLSession leaves the body in a file of its own; nobody takes it.
+      try? FileManager.default.removeItem(at: tempURL)
+      throw error
+    }
 
     // A folder of its own per download, so the file keeps the server's name
     // (which the preview shows) while two downloads of same-named files, at
     // the same time or one after the other, never share a path and hand over
-    // each other's document.
-    let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    // each other's document. The File Provider extension removes the folder
+    // once it has handed the file over; in the app,
+    // `sweepTemporaryDownloads` removes it at a later launch.
+    let folder = Self.temporaryDownloadsDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     let dest = folder.appendingPathComponent(response.suggestedFilename ?? "document.pdf")
-    try FileManager.default.moveItem(at: tempURL, to: dest)
+    do {
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+      try FileManager.default.moveItem(at: tempURL, to: dest)
+    } catch {
+      try? FileManager.default.removeItem(at: tempURL)
+      try? FileManager.default.removeItem(at: folder)
+      throw error
+    }
     return dest
   }
 

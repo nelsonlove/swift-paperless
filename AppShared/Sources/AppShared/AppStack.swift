@@ -7,6 +7,7 @@
 
 import Common
 import Foundation
+import Networking
 import Persistence
 import os
 
@@ -137,8 +138,14 @@ public final class AppStack {
   /// The once-per-launch content sweep and keychain upkeep. The app calls it;
   /// the Share Extension, which builds a stack of its own, does not walk the
   /// store on every share.
+  ///
+  /// It also removes the app's stale download folders: a download that
+  /// bypasses the content store leaves a folder of its own in the temporary
+  /// directory (`ApiRepository.fetchToTemp`), whose file a preview or a share
+  /// sheet may still hold, so only folders older than a day go.
   public func runLaunchMaintenance() {
     Keychain.migrateAccessibilityIfNeeded()
+    Task.detached(priority: .utility) { ApiRepository.sweepTemporaryDownloads() }
     Task { @MainActor in
       // Thumbnails moved into the content store; the old cache is dead weight.
       if let root = contentReclaimer.store?.root {

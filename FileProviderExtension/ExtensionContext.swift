@@ -79,11 +79,13 @@ final class ExtensionContext {
 
   /// The library reads: single-flight, and never back in time.
   private let reads = FreshRead<Library>()
-  /// The library one burst of change pages works from: kept while
-  /// `moreComing` is true, so the pages of one burst diff against one read;
-  /// cleared when the burst ends, fails, is cancelled or is invalidated, and
-  /// expires after ``burstLifetime``.
-  private var burst = ExpiringValue<Library>(lifetime: ExtensionContext.burstLifetime)
+  /// What one burst of change pages works from: the library, kept while
+  /// `moreComing` is true so the pages of one burst diff against one read
+  /// (never one older than the newest cached read), and the change state as
+  /// last saved, so a page neither reads nor decodes the state file. Cleared
+  /// when the burst ends, fails, is cancelled or is invalidated, and expires
+  /// after ``burstLifetime``.
+  private var burst = ChangeBurst<Library>(lifetime: ExtensionContext.burstLifetime)
   /// The one creation of the initial change state in flight, which every
   /// caller of ``changeState()`` joins.
   private let stateCreation = TaskSlot<ChangeState, any Error>()
@@ -138,11 +140,15 @@ final class ExtensionContext {
   ///
   /// - Throws: ``LibraryUnavailable`` when the library cannot be read.
   func library(refresh: Bool) async throws -> Library {
-    let read: @MainActor () async throws -> Library = { [weak self] in
+    refresh ? try await reads.fresh(readClosure) : try await reads.cachedOrFresh(readClosure)
+  }
+
+  /// The one read every library request hands to ``reads``.
+  private var readClosure: @MainActor () async throws -> Library {
+    { [weak self] in
       guard let self else { throw CancellationError() }
       return try await self.readLibrary()
     }
-    return refresh ? try await reads.fresh(read) : try await reads.cachedOrFresh(read)
   }
 
   /// One read of the database. The reads run on the database's queue and the
@@ -179,21 +185,47 @@ final class ExtensionContext {
     return library
   }
 
-  /// The library for the next page of changes: the burst's while a burst is
-  /// running and young, else a fresh read.
-  func libraryForChanges() async throws -> Library {
-    if let library = burst.value(at: Date()) { return library }
-    return try await library(refresh: true)
+  /// The library for the next page of changes, with the generation of its
+  /// read and, inside a burst, the runs that remain (the page's plan):
+  /// the burst's while a burst is running and young and no newer read has
+  /// been cached since; the newer cached library, at its generation and with
+  /// no plan, when a lookup or an enumeration read the library meanwhile;
+  /// else (a new burst) a fresh read.
+  func libraryForChanges() async throws -> (
+    library: Library, generation: UInt64, plan: [[TreeDiff.Change]]?
+  ) {
+    let newest = reads.cached.map { (library: $0, generation: reads.cachedGeneration) }
+    switch burst.source(at: Date(), newest: newest) {
+    case .burst(let library, let generation, let plan):
+      return (library, generation, plan)
+    case .cached(let library, let generation):
+      return (library, generation, nil)
+    case .read:
+      let entry = try await reads.freshEntry(readClosure)
+      return (entry.value, entry.generation, nil)
+    }
   }
 
-  /// Keeps `library` for the next page of a burst.
-  func continueBurst(with library: Library) {
-    burst.set(library, at: Date())
+  /// The change state for a page asked from `anchor`: the burst's, as it
+  /// last saved it, when the page continues the burst from its anchor; else
+  /// the stored one (a re-ask from the previous anchor needs the previous
+  /// snapshot, which the burst does not keep).
+  func stateForChanges(from anchor: Data) async -> ChangeState? {
+    if let state = burst.state(at: Date(), for: anchor) { return state }
+    return await loadState()
   }
 
-  /// Ends the burst: its library is not used again.
+  /// Keeps `library` (from the read of `generation`), `state` (as saved) and
+  /// the runs that remain for the next page of a burst.
+  func continueBurst(
+    with library: Library, generation: UInt64, state: ChangeState, plan: [[TreeDiff.Change]]
+  ) {
+    burst.keep(library: library, generation: generation, state: state, plan: plan, at: Date())
+  }
+
+  /// Ends the burst: its library and state are not used again.
   func endBurst() {
-    burst.set(nil, at: Date())
+    burst.end(at: Date())
   }
 
   /// The content-store key `download` uses for a document: the archive key
@@ -236,15 +268,16 @@ final class ExtensionContext {
   /// The server row as the database has it now, or `nil` when it is gone.
   /// Read each time it is needed: the app adds, edits, signs in and signs out
   /// servers from its own process, which this process's observation of the
-  /// table never sees. Call it inside ``work(_:)``.
+  /// table never sees. The read runs on the database's queue, so the main
+  /// actor never waits on the app's writer lock. Call it inside ``work(_:)``.
   ///
   /// - Throws: ``LibraryUnavailable`` when the row cannot be read, which the
   ///   callers answer with NSFileProviderErrorServerUnreachable.
-  func serverRow() throws -> ServerRow? {
+  func serverRow() async throws -> ServerRow? {
     guard let stack, let serverID else { return nil }
     let record: ConnectionRecord?
     do {
-      record = try stack.database.connection(id: serverID)
+      record = try await stack.database.fetchConnection(id: serverID)
     } catch {
       Self.logger.error("File Provider: reading the server row failed: \(error)")
       throw LibraryUnavailable(description: "reading the server row failed: \(error)")
@@ -261,6 +294,26 @@ final class ExtensionContext {
     guard let stack else { throw NSFileProviderError(.notAuthenticated) }
     return try await stack.sessionRegistry.session(for: server.stored.id)
       .prepareRepository(for: server.stored)
+  }
+
+  /// Whether the database, read now, still holds document `id`: a download
+  /// 404 for a document it no longer holds means the document is gone. Call
+  /// it inside ``work(_:)``.
+  ///
+  /// - Throws: ``LibraryUnavailable`` when the row cannot be read; that is no
+  ///   confirmation either way.
+  func documentInDatabase(_ id: UInt) async throws -> Bool {
+    guard let stack, let serverID else {
+      throw LibraryUnavailable(description: "no on-disk database")
+    }
+    do {
+      return try await stack.database.document(serverID: serverID, id: id) != nil
+    } catch let error where error.isCancellationError {
+      throw error
+    } catch {
+      Self.logger.error("File Provider: reading document \(id, privacy: .public) failed: \(error)")
+      throw LibraryUnavailable(description: "reading the document failed: \(error)")
+    }
   }
 
   /// The stored copy of `document`'s content, if the content store has one,

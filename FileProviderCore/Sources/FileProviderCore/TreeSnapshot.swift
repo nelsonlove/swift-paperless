@@ -6,7 +6,7 @@
 import Foundation
 
 /// What the File Provider system was last told about a tree: per item its
-/// parent, name, version and metadata stamp. The extension persists one per domain and diffs
+/// parent, name, version, metadata stamp and dates. The extension persists one per domain and diffs
 /// the next tree against it with ``TreeDiff``.
 public struct TreeSnapshot: Codable, Equatable, Sendable {
   public struct Entry: Codable, Equatable, Hashable, Sendable {
@@ -20,16 +20,21 @@ public struct TreeSnapshot: Codable, Equatable, Sendable {
     /// still decodes: its entries have none, differ from every current entry
     /// that has one, and are each sent once as an update.
     public var metadata: String?
+    /// The item's dates (``TreeItem/dates``), so a metadata-only edit, which
+    /// keeps the content version, is still sent as an update. Optional for the
+    /// same reason as ``metadata``; `nil` for folders.
+    public var dates: String?
 
     public init(
       parent: ItemIdentifier, name: String, version: String, isFolder: Bool,
-      metadata: String? = nil
+      metadata: String? = nil, dates: String? = nil
     ) {
       self.parent = parent
       self.name = name
       self.version = version
       self.isFolder = isFolder
       self.metadata = metadata
+      self.dates = dates
     }
   }
 
@@ -56,7 +61,7 @@ public struct TreeSnapshot: Codable, Equatable, Sendable {
     for item in items where item.identifier != .root {
       entries[item.identifier] = Entry(
         parent: item.parent, name: item.name, version: item.version, isFolder: item.isFolder,
-        metadata: metadata(item))
+        metadata: metadata(item), dates: item.dates.isEmpty ? nil : item.dates)
     }
     self.entries = entries
   }

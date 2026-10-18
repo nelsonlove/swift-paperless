@@ -10,7 +10,8 @@ import os
 /// the app, under the same principle that governs the element and document
 /// caches ("GRDB is sealed inside Persistence").
 ///
-/// **These are the only blocking accessors in the package**, and the rule is
+/// **These are the only blocking accessors in the package** (``fetchConnection(id:)``
+/// is the one async read, for callers outside the app), and the rule is
 /// one line: *blocking database access is allowed for the `server` table and
 /// nothing else.* Every cache table (`Database+Elements`, `+Documents`,
 /// `+DocumentDetail`, `+QuerySyncError`, `+SyncState`, `+Maintenance`) is
@@ -40,6 +41,19 @@ extension Database {
   public func connection(id: UUID) throws(DatabaseError) -> ConnectionRecord? {
     try wrapping("connection") {
       try writer.read { db in
+        try ConnectionRecord.fetchOne(db, key: id)
+      }
+    }
+  }
+
+  /// ``connection(id:)`` without blocking the caller: the read runs on the
+  /// database's queue and the caller awaits it. For a caller on the main actor
+  /// in a process that is not the one writing the table (the File Provider
+  /// extension reads the row the app writes), where a blocking read could
+  /// wait out the `busy_timeout`.
+  public func fetchConnection(id: UUID) async throws -> ConnectionRecord? {
+    try await wrappingAsync("fetchConnection") {
+      try await writer.read { db in
         try ConnectionRecord.fetchOne(db, key: id)
       }
     }
