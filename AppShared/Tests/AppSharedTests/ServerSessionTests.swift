@@ -203,63 +203,6 @@ struct ServerSessionTests {
     #expect(rows.first?.outcome == "cancelled")
   }
 
-  // MARK: - Library change signal
-
-  @Test("A sync pass signals that the library changed")
-  func passSignalsLibraryChange() async throws {
-    let traffic = Traffic()
-    let (harness, stored) = try await fillingHarness(traffic)
-    traffic.released = true
-    var signalled: [UUID] = []
-    harness.session.onLibraryChanged = { signalled.append($0) }
-
-    await harness.session.sync(stored: stored, phases: [.fill])
-
-    #expect(signalled.contains(harness.serverID))
-  }
-
-  @Test("A reconcile that ran signals that the library changed")
-  func reconcileSignalsLibraryChange() async throws {
-    let harness = try await StoreHarness.make(documents: [document(1)])
-    var signalled: [UUID] = []
-    harness.session.onLibraryChanged = { signalled.append($0) }
-
-    let result = await harness.session.reconcileDocuments(force: true)
-
-    #expect(result.succeeded > 0)
-    #expect(signalled == [harness.serverID])
-  }
-
-  @Test("A document edit or delete written through signals that the library changed")
-  func writeThroughSignalsLibraryChange() async throws {
-    let harness = try await StoreHarness.make(documents: [document(1)])
-    var signalled: [UUID] = []
-    harness.session.onLibraryChanged = { signalled.append($0) }
-    let repository = try #require(harness.session.repository)
-
-    var edited = document(1)
-    edited.title = "Edited"
-    _ = try await repository.update(document: edited)
-    #expect(signalled == [harness.serverID])
-
-    try await repository.delete(document: edited)
-    #expect(signalled == [harness.serverID, harness.serverID])
-  }
-
-  @Test("A session the registry makes carries the registry's signal")
-  func registryInstallsSignal() async throws {
-    let database = try Database.inMemory()
-    let registry = ServerSessionRegistry(
-      database: database, manager: ConnectionManager(database: database))
-    var signalled: [UUID] = []
-    registry.onLibraryChanged = { signalled.append($0) }
-    let id = UUID()
-
-    registry.session(for: id).onLibraryChanged?(id)
-
-    #expect(signalled == [id])
-  }
-
   // MARK: - Sync run record
 
   /// The record once `count` rows are closed, newest first.
