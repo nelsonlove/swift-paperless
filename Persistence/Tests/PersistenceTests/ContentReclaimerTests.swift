@@ -255,6 +255,31 @@ struct ContentReclaimerTests {
     #expect(store.exists(key(server, 1, .thumbnail)))
   }
 
+  @Test("Without over-budget passes, recording past the budget removes nothing")
+  func recordStoreOverBudgetWithoutPasses() async throws {
+    let server = UUID()
+    let database = try Database.seeded(serverID: server, documents: [doc(1), doc(2)])
+    let store = try makeStore()
+    let later = Date().addingTimeInterval(3600)
+    let reclaimer = ContentReclaimer(
+      database: database, store: store, budget: 150, now: { later }, reclaimsOverBudget: false)
+
+    try write(store, key(server, 1), bytes: 100)
+    try await reclaimer.recordStore(
+      key(server, 1), documentID: 1, size: 100, modified: date(1), checksum: nil,
+      storedAt: Date())
+    try write(store, key(server, 2), bytes: 100)
+    try await reclaimer.recordStore(
+      key(server, 2), documentID: 2, size: 100, modified: date(1), checksum: nil,
+      storedAt: Date())
+
+    // As long as the test above waits for its pass to remove a file.
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(store.exists(key(server, 1)))
+    #expect(store.exists(key(server, 2)))
+    #expect(try await database.evictableFileBytes() == 200)
+  }
+
   @Test("recordAccess records once per window and forget drops the row")
   func accessAndForget() async throws {
     let server = UUID()

@@ -179,6 +179,15 @@ extension Database {
     }
   }
 
+  /// Every row the index holds for one server.
+  public func files(serverID: UUID) async throws -> [FileRecord] {
+    try await wrappingAsync("files(serverID:)") {
+      try await writer.read { db in
+        try FileRecord.filter(Column("server_id") == serverID).fetchAll(db)
+      }
+    }
+  }
+
   /// Every key the index holds.
   public func allFileKeys() async throws -> Set<ContentStore.Key> {
     Set(try await allFiles().compactMap(\.key))

@@ -37,6 +37,8 @@ public final class ServerSessionRegistry {
   @ObservationIgnored private let suspension: DatabaseSuspensionController?
   /// The process's file index and reclaim, handed to every session.
   @ObservationIgnored public let contentReclaimer: ContentReclaimer?
+  /// Handed to every session; see ``ServerSession/maintainsCache``.
+  @ObservationIgnored public let maintainsCache: Bool
 
   /// Called with the ids of servers whose rows just vanished. Lifecycle only:
   /// the cache rows cascaded with the row, this is for what lives outside the
@@ -63,13 +65,15 @@ public final class ServerSessionRegistry {
     manager: ConnectionManager,
     mode: ApiRepository.Mode = Bundle.main.appConfiguration.mode,
     suspension: DatabaseSuspensionController? = nil,
-    contentReclaimer: ContentReclaimer? = nil
+    contentReclaimer: ContentReclaimer? = nil,
+    maintainsCache: Bool = true
   ) {
     self.database = database
     self.manager = manager
     self.mode = mode
     self.suspension = suspension
     self.contentReclaimer = contentReclaimer
+    self.maintainsCache = maintainsCache
   }
 
   deinit {
@@ -133,7 +137,7 @@ public final class ServerSessionRegistry {
     }
     let session = ServerSession(
       serverID: id, database: database, mode: mode, suspension: suspension,
-      contentReclaimer: contentReclaimer)
+      contentReclaimer: contentReclaimer, maintainsCache: maintainsCache)
     sessions[id] = session
     return session
   }

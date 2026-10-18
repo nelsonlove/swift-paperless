@@ -99,6 +99,11 @@ public final class ServerSession {
   /// re-auth or a connection edit happens with lists on screen and must skip it.
   @ObservationIgnored private var hasBuiltRepository = false
 
+  /// Whether the first build trims the cache (the *Recently browsed* cap).
+  /// `false` in the File Provider extension: it runs next to the app, whose
+  /// lists may be open, and leaves every cache upkeep to the app.
+  public let maintainsCache: Bool
+
   /// The build currently in flight, if any.
   ///
   /// `prepareRepository` has an `await` between "is `built` still good?" and
@@ -282,15 +287,20 @@ public final class ServerSession {
     return (error as? any LocalizedError)?.errorDescription ?? error.localizedDescription
   }
 
-  /// - Parameter suspension: The app's; without one the session's own only counts.
+  /// - Parameters:
+  ///   - suspension: The app's; without one the session's own only counts.
+  ///   - maintainsCache: `false` skips the cache trim of the first build; see
+  ///     ``maintainsCache``.
   public init(
     serverID: UUID,
     database: Database,
     mode: ApiRepository.Mode = Bundle.main.appConfiguration.mode,
     suspension: DatabaseSuspensionController? = nil,
-    contentReclaimer: ContentReclaimer? = nil
+    contentReclaimer: ContentReclaimer? = nil,
+    maintainsCache: Bool = true
   ) {
     self.serverID = serverID
+    self.maintainsCache = maintainsCache
     source = .stored(database: database, mode: mode)
     self.suspension = suspension ?? DatabaseSuspensionController()
     self.contentReclaimer = contentReclaimer
@@ -306,6 +316,7 @@ public final class ServerSession {
     suspension: DatabaseSuspensionController? = nil
   ) {
     self.serverID = serverID
+    maintainsCache = true
     source = .fixed(repository)
     self.suspension = suspension ?? DatabaseSuspensionController()
     contentReclaimer = nil
@@ -388,14 +399,14 @@ public final class ServerSession {
       // The cap runs inside the build rather than after it. A caller waiting on
       // `building` resumes when the build finishes, so work done after it could
       // still be running when that caller opens a list on the new repository.
-      let isFirstBuild = !hasBuiltRepository
+      let trimsCache = !hasBuiltRepository && maintainsCache
       // No suspension between `waitUntilIdle` returning and this claim, so the
       // slot is empty here and this starts the build rather than joining one.
       let repository = try await building.joinOrStart {
         let repository = try await makeCachingRepository(
           for: stored, database: database, mode: mode,
           contentStore: self.contentReclaimer?.store, fileIndex: self.contentReclaimer)
-        if isFirstBuild {
+        if trimsCache {
           await repository.applyRecentlyBrowsedCap()
         }
         return repository

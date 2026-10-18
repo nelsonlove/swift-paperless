@@ -76,6 +76,10 @@ public actor ContentReclaimer: FileIndex {
   private let database: Database
   private let budget: Int64
   private let now: @Sendable () -> Date
+  /// Whether recording a file that takes the store over the budget starts a
+  /// pass. Off in the File Provider extension, which runs next to the app and
+  /// leaves every pass to it.
+  public nonisolated let reclaimsOverBudget: Bool
 
   private var current: Task<Report, Never>?
   /// Set when a run was asked for while one was in flight: that pass may have
@@ -84,16 +88,21 @@ public actor ContentReclaimer: FileIndex {
   private var lastRun: Date?
   private var lastTouched: [ContentStore.Key: Date] = [:]
 
-  /// - Parameter now: injectable clock, so tests can age files and accesses
-  ///   without backdating them.
+  /// - Parameters:
+  ///   - now: injectable clock, so tests can age files and accesses without
+  ///     backdating them.
+  ///   - reclaimsOverBudget: `false` keeps ``recordStore(_:documentID:size:modified:checksum:storedAt:)``
+  ///     from starting a pass; the process then does no cache maintenance
+  ///     unless it calls ``run(reason:)`` itself.
   public init(
     database: Database, store: ContentStore?, budget: Int64 = StoragePolicy.documentBudgetBytes,
-    now: @escaping @Sendable () -> Date = { Date() }
+    now: @escaping @Sendable () -> Date = { Date() }, reclaimsOverBudget: Bool = true
   ) {
     self.database = database
     self.store = store
     self.budget = budget
     self.now = now
+    self.reclaimsOverBudget = reclaimsOverBudget
   }
 
   // MARK: - Running
@@ -273,7 +282,7 @@ public actor ContentReclaimer: FileIndex {
     let total = try await database.recordFile(
       key, documentID: documentID, size: size, modified: modified, checksum: checksum,
       storedAt: storedAt, lastAccessedAt: evictable ? storedAt : nil)
-    if evictable, total > budget {
+    if reclaimsOverBudget, evictable, total > budget {
       Task { await run(reason: .overBudget) }
     }
   }
