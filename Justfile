@@ -130,9 +130,9 @@ _test_swift package:
   swift test --package-path {{package}} --disable-keychain
 
 # Host-runnable package tests (Common, DataModel, Networking, Persistence,
-# AppShared) run natively on macOS via `swift test`. AppViews is iOS-only and
-# has no test target of its own.
-test: (_test_swift "Common") (_test_swift "DataModel") (_test_swift "Networking") (_test_swift "Persistence") (_test_swift "AppShared")
+# AppShared, FileProviderCore) run natively on macOS via `swift test`. AppViews
+# is iOS-only and has no test target of its own.
+test: (_test_swift "Common") (_test_swift "DataModel") (_test_swift "Networking") (_test_swift "Persistence") (_test_swift "AppShared") (_test_swift "FileProviderCore")
 
 lint-format:
   find . -name '*.swift' \
