@@ -2,11 +2,9 @@
 // The target xcconfigs consume these settings independently so each target gets
 // its own provisioning profile.
 // Release builds always carry upstream's identity and team, whatever a developer's
-// Config/Shared/Local.xcconfig says: -xcconfig wins over every included file.
-SWP_BUNDLE_ID_PREFIX = com.paulgessinger.swift-paperless
-SWP_APP_GROUP = group.com.paulgessinger.swift-paperless
-SWP_KEYCHAIN_GROUP = $(AppIdentifierPrefix)$(SWP_BUNDLE_ID_PREFIX)
-DEVELOPMENT_TEAM = ZHKJ4NHK6F
+// Config/Shared/Local.xcconfig says: -xcconfig wins over every included file,
+// and this file includes Identity.xcconfig but not Local.xcconfig.
+#include "../Config/Shared/Identity.xcconfig"
 
 SWP_CODE_SIGN_STYLE = Manual
 SWP_CODE_SIGN_IDENTITY = Apple Distribution

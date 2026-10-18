@@ -1,6 +1,10 @@
 // Copy this file to Config/Shared/Local.xcconfig (ignored by git) to build and
-// sign the app on your own device under your own Apple team. Every value here
-// overrides the one in Base.xcconfig and Identity.xcconfig.
+// sign the app on your own device under your own Apple team. Base.xcconfig
+// includes it last, so it overrides project-level settings only (those in
+// Base.xcconfig and Identity.xcconfig); a key that a target xcconfig sets
+// (Config/App, Config/*Extension) still wins. Set only the keys below: the team
+// and the SWP_* identity keys (SWP_KEYCHAIN_GROUP is derived, and rarely needs
+// a value of its own). Release archives ignore this file.
 // See docs/development/local-build.md, "Building on your own device".
 
 // Your team id (Xcode > Settings > Accounts, or developer.apple.com > Membership).

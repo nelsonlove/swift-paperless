@@ -9,8 +9,6 @@ SWIFT_STRICT_CONCURRENCY = complete
 // Project-level deployment target. Targets override as needed (app/extension use 17.0).
 IPHONEOS_DEPLOYMENT_TARGET = 16.4
 
-DEVELOPMENT_TEAM = ZHKJ4NHK6F
-
 // Signing defaults for local development. CIArchiveSigning.xcconfig overrides
 // these indirections for deterministic App Store archives.
 SWP_CODE_SIGN_IDENTITY = Apple Development
@@ -26,5 +24,7 @@ ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES
 DEAD_CODE_STRIPPING = YES
 
 // Optional, ignored by git: a developer's own team, bundle id prefix and app
-// group (see Local.xcconfig.example). Last, so it overrides everything above.
+// group (see Local.xcconfig.example). Last, so it overrides every project-level
+// setting above; the target xcconfigs (Config/App, Config/*Extension) still win
+// over it for the keys they set.
 #include? "Local.xcconfig"

@@ -1,18 +1,20 @@
-// The app's identity: the bundle id prefix, the app group and the keychain
-// group. Every target derives its ids from these, so a fork can build and sign
-// under its own Apple team by overriding them in Local.xcconfig (see
-// Local.xcconfig.example and docs/development/local-build.md) without changing
-// any source file.
+// The app's identity: the Apple team, the bundle id prefix, the app group and
+// the keychain group. Every target derives its ids from these, so a fork can
+// build and sign under its own Apple team by overriding them in Local.xcconfig
+// (see Local.xcconfig.example and docs/development/local-build.md) without
+// changing any source file.
 //
 // The app and its extensions read SWP_BUNDLE_ID_PREFIX and SWP_APP_GROUP at run
 // time from their Info.plist (SWPBundleIDPrefix, SWPAppGroupIdentifier); see
 // Common/Sources/Common/AppIdentity.swift, whose defaults must equal the values
 // below (a test in CommonTests checks it).
 //
-// Release builds pin these three settings to the values below, and
-// DEVELOPMENT_TEAM to the one in Base.xcconfig, in
-// scripts/CIArchiveSigning.xcconfig, so an archive never picks up a local
-// identity or team.
+// Included by Base.xcconfig (followed by the optional Local.xcconfig) and by
+// scripts/CIArchiveSigning.xcconfig, which is passed with -xcconfig and so
+// restores these values over any Local.xcconfig: an archive never picks up a
+// local identity or team.
+
+DEVELOPMENT_TEAM = ZHKJ4NHK6F
 
 SWP_BUNDLE_ID_PREFIX = com.paulgessinger.swift-paperless
 SWP_APP_GROUP = group.com.paulgessinger.swift-paperless
