@@ -60,21 +60,48 @@ struct ContentHandoverTests {
     }
     #expect(!FileManager.default.fileExists(atPath: destination.path))
   }
+
+  @Test("A cancelled hand-over leaves no copy behind")
+  func cancelled() throws {
+    let (source, destination, folder) = try scratch()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    #expect(throws: CancellationError.self) {
+      try ContentHandover.place(
+        source, at: destination, clone: { _, _ in EXDEV }, isCancelled: { true })
+    }
+    #expect(!FileManager.default.fileExists(atPath: destination.path))
+  }
 }
 
 @Suite
 struct NotFoundAnswerTests {
-  @Test("Only the download's own 404, for a document gone from the database, is noSuchItem")
-  func answers() {
+  @Test("A document the database no longer holds is gone")
+  func goneFromDatabase() {
+    #expect(NotFoundAnswer.answer(inDatabase: false, server: nil, localVersionID: 1) == .noSuchItem)
+  }
+
+  @Test("A document the server also answers 404 for is gone")
+  func goneFromServer() {
     #expect(
-      NotFoundAnswer.answer(source: .documentDownload, documentInDatabase: false) == .noSuchItem)
+      NotFoundAnswer.answer(inDatabase: true, server: .gone, localVersionID: 1) == .noSuchItem)
+  }
+
+  @Test("A document the server has under another version is kept, with a signal")
+  func versionGone() {
     #expect(
-      NotFoundAnswer.answer(source: .documentDownload, documentInDatabase: true)
-        == .serverUnreachable)
+      NotFoundAnswer.answer(
+        inDatabase: true, server: .present(currentVersionID: 2), localVersionID: 1)
+        == .serverUnreachable(signal: true))
+  }
+
+  @Test("A document the server has as it is, or could not be asked about, is kept")
+  func kept() {
     #expect(
-      NotFoundAnswer.answer(source: .documentDownload, documentInDatabase: nil)
-        == .serverUnreachable)
-    // A 404 from building the repository (the version probe) never deletes.
-    #expect(NotFoundAnswer.answer(source: .other, documentInDatabase: false) == .serverUnreachable)
+      NotFoundAnswer.answer(
+        inDatabase: true, server: .present(currentVersionID: 1), localVersionID: 1)
+        == .serverUnreachable(signal: false))
+    #expect(
+      NotFoundAnswer.answer(inDatabase: true, server: .unknown, localVersionID: 1)
+        == .serverUnreachable(signal: false))
   }
 }

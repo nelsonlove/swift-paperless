@@ -32,15 +32,21 @@ public enum ContentHandover {
   /// Clones `source` to `destination`, or copies it when the clone fails with
   /// one of ``fallbackErrors``.
   ///
-  /// - Parameter clone: clonefile(2), returning 0 or an errno; tests pass one
-  ///   that fails.
+  /// Blocking (a copy can take a while): call it off the main actor.
+  ///
+  /// - Parameters:
+  ///   - clone: clonefile(2), returning 0 or an errno; tests pass one that
+  ///     fails.
+  ///   - isCancelled: asked before and after the copy; a cancellation leaves
+  ///     no file at `destination`.
   /// - Returns: how the file was placed.
-  /// - Throws: a `POSIXError` when the clone fails with another error, or the
-  ///   copy's error.
+  /// - Throws: a `POSIXError` when the clone fails with another error, the
+  ///   copy's error, or `CancellationError`.
   @discardableResult
   public static func place(
     _ source: URL, at destination: URL,
-    clone: (String, String) -> Int32 = ContentHandover.clonefile
+    clone: (String, String) -> Int32 = ContentHandover.clonefile,
+    isCancelled: () -> Bool = { false }
   ) throws -> Method {
     let cloneResult = clone(source.path, destination.path)
     if cloneResult == 0 { return .clone }
@@ -48,8 +54,10 @@ public enum ContentHandover {
       throw POSIXError(POSIXErrorCode(rawValue: cloneResult) ?? .EIO)
     }
     try? FileManager.default.removeItem(at: destination)
+    if isCancelled() { throw CancellationError() }
     do {
       try FileManager.default.copyItem(at: source, to: destination)
+      if isCancelled() { throw CancellationError() }
     } catch {
       try? FileManager.default.removeItem(at: destination)
       throw error

@@ -263,6 +263,12 @@ public protocol CachingBackend: AnyObject, Sendable {
   /// behind it, naming the pass that repairs the cache. The mutation itself
   /// still succeeds. The owning `ServerSession` installs this.
   var onCacheWriteLost: (@MainActor (CacheHeal) -> Void)? { get set }
+
+  /// The document as the server has it now, read without the cache: no
+  /// cached row served in its place and nothing written. `nil` when the
+  /// server answers 404 for the document. The File Provider extension uses it
+  /// to tell a deleted document from a deleted version after a download 404.
+  func serverDocument(id: UInt) async throws -> Document?
 }
 
 /// The sync pass that brings the cache up to a server-accepted change whose
@@ -1218,6 +1224,10 @@ public final class CachingRepository<Wrapped: Repository>: Repository, CachingBa
 
   public func create(document: ProtoDocument, file: URL, filename: String) async throws {
     try await wrapped.create(document: document, file: file, filename: filename)
+  }
+
+  public func serverDocument(id: UInt) async throws -> Document? {
+    try await wrapped.document(id: id)
   }
 
   public func document(id: UInt) async throws -> Document? {
