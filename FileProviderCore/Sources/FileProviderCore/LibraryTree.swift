@@ -21,12 +21,14 @@ public struct TreeItem: Hashable, Sendable {
   public var name: String
   public var kind: Kind
   /// Changes when the item's content changes. For documents it covers the
-  /// variant actually served (the original when there is no archive), the
-  /// current version id and, when the document carries one, that version's
-  /// checksum; never `modified`, which a metadata-only edit (a title, a tag)
-  /// changes too, and a new content version makes the system download the
-  /// file again. For folders it is empty (a folder's name and parent are
-  /// compared on their own).
+  /// variant actually served (the original when there is no archive) and,
+  /// on a server with document versions, the current version id and that
+  /// version's checksum, not `modified`, which a metadata-only edit (a title,
+  /// a tag) changes too; a new content version makes the system download the
+  /// file again. A server with no version rows (paperless before 3.0) edits a
+  /// file in place (rotate, delete pages, re-OCR) under the same id, so there
+  /// `modified` is the only signal and is used. For folders it is empty (a
+  /// folder's name and parent are compared on their own).
   public var version: String
   /// The document's dates Files shows (created and `modified`), which a
   /// metadata edit changes; part of the metadata version, not the content
@@ -295,18 +297,22 @@ public struct LibraryTree: Sendable {
 // MARK: - Building
 
 extension LibraryTree {
-  /// A document's content version (``TreeItem/version``): the variant served,
-  /// the current version id, and that version's checksum when the document
-  /// carries one. Not `modified`, so a metadata-only edit keeps it.
+  /// A document's content version (``TreeItem/version``): the variant
+  /// served, then either the current version id and its checksum (when the
+  /// document has version rows, so a metadata-only edit keeps it) or, with no
+  /// version rows, `modified` (an in-place edit keeps the id, so `modified`
+  /// is the only sign the file changed).
   public static func contentVersion(
     for document: Document, content: FileProviderSettings.Content
   ) -> String {
     let served = FileNaming.servedContent(for: document, requested: content)
     let versionID = document.currentVersionID
-    var version = "\(served.rawValue):\(versionID)"
-    if let checksum = document.versions.first(where: { $0.id == versionID })?.checksum,
-      !checksum.isEmpty
-    {
+    guard let current = document.versions.first(where: { $0.id == versionID }) else {
+      let modified = document.modified.map { String($0.timeIntervalSinceReferenceDate) } ?? "-"
+      return "\(served.rawValue):\(versionID)@\(modified)"
+    }
+    var version = "\(served.rawValue):v\(versionID)"
+    if let checksum = current.checksum, !checksum.isEmpty {
       version += "/\(checksum)"
     }
     return version

@@ -15,9 +15,18 @@ struct ContentVersionTests {
     tree.item(for: .document(document.id))!
   }
 
-  @Test("A title or tag change changes the metadata version only")
+  /// A document from a server with version rows.
+  private func versioned(_ document: Document) -> Document {
+    var document = document
+    document.versions = [
+      DocumentVersion(id: document.id, added: Fixtures.date(2026), checksum: "aa", isRoot: true)
+    ]
+    return document
+  }
+
+  @Test("With version rows, a title or tag change changes the metadata version only")
   func metadataOnlyEdit() {
-    let document = Fixtures.documents[0]
+    let document = versioned(Fixtures.documents[0])
     let before = item(document, in: Fixtures.tree(documents: [document]))
 
     var retitled = document
@@ -34,10 +43,28 @@ struct ContentVersionTests {
     }
   }
 
+  @Test("With no version rows, an in-place edit (a new modified) changes the content version")
+  func inPlaceEditWithoutVersions() {
+    let document = Fixtures.documents[0]
+    #expect(document.versions.isEmpty)
+    var rotated = document
+    rotated.modified = Fixtures.date(2026, 3, 1)
+    let before = item(document, in: Fixtures.tree(documents: [document]))
+    let after = item(rotated, in: Fixtures.tree(documents: [rotated]))
+    #expect(after.contentVersion != before.contentVersion)
+    #expect(after.metadataVersion != before.metadataVersion)
+    // Same document, same modified: the same version.
+    #expect(
+      LibraryTree.contentVersion(for: document, content: .archive)
+        == LibraryTree.contentVersion(for: document, content: .archive))
+  }
+
   @Test("A new current version or checksum changes the content version")
   func contentEdit() {
     var document = Fixtures.documents[0]
-    document.versions = [DocumentVersion(id: 10, added: Fixtures.date(2026), checksum: "aa", isRoot: true)]
+    document.versions = [
+      DocumentVersion(id: 10, added: Fixtures.date(2026), checksum: "aa", isRoot: true)
+    ]
     let base = LibraryTree.contentVersion(for: document, content: .archive)
     var newVersion = document
     newVersion.versions.append(
