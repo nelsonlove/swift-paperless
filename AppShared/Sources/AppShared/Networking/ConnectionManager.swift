@@ -210,9 +210,12 @@ public final class ConnectionManager {
 
       while index < args.count {
         let arg = args[index]
+        if let value = LaunchArguments.boolValue(of: "--preview-mode", in: arg) {
+          mode = value
+          index += 1
+          continue
+        }
         switch arg {
-        case "--preview-mode":
-          mode = true
         case "--preview-url":
           if index + 1 < args.count {
             url = args[index + 1]
@@ -224,11 +227,7 @@ public final class ConnectionManager {
             index += 1
           }
         default:
-          if arg.hasPrefix("--preview-mode=") {
-            let value = String(arg.dropFirst("--preview-mode=".count))
-            let lowercased = value.lowercased()
-            mode = !(lowercased == "0" || lowercased == "false" || lowercased == "no")
-          } else if arg.hasPrefix("--preview-url=") {
+          if arg.hasPrefix("--preview-url=") {
             url = String(arg.dropFirst("--preview-url=".count))
           } else if arg.hasPrefix("--preview-token=") {
             token = String(arg.dropFirst("--preview-token=".count))
