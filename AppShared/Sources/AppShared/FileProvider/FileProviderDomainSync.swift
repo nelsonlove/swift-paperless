@@ -272,9 +272,15 @@
       }
 
       private static func system(_ domain: DomainReconcile.Domain) -> NSFileProviderDomain {
-        NSFileProviderDomain(
+        let system = NSFileProviderDomain(
           identifier: NSFileProviderDomainIdentifier(domain.identifier),
           displayName: domain.displayName)
+        // The extension has no trash container. NSFileProviderDomain.h says of
+        // supportsSyncingTrash: "This property defaults to YES."
+        if #available(iOS 18, *) {
+          system.supportsSyncingTrash = false
+        }
+        return system
       }
     }
   #endif
