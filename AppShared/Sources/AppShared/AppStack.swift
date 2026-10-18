@@ -44,9 +44,21 @@ public final class AppStack {
     public private(set) lazy var fileProviderDomainSync = FileProviderDomainSync(
       connectionManager: connectionManager, database: database)
 
-    /// Signals the File Provider after this process writes the library. Only
-    /// where the extension exists, and only over the database on disk.
-    private var fileProviderLibraryWatch: FileProviderLibraryWatch?
+    /// Signals the File Provider after this process writes the library.
+    /// Opt-in through ``startFileProviderLibraryWatch()``, so a stack built in
+    /// the File Provider extension never signals itself.
+    public private(set) var fileProviderLibraryWatch: FileProviderLibraryWatch?
+
+    /// Start signalling the File Provider after this process's library writes.
+    /// The app and the Share Extension call this; the File Provider extension
+    /// does not. Does nothing over a database that is not on disk.
+    public func startFileProviderLibraryWatch() {
+      guard database.isOnDisk, fileProviderLibraryWatch == nil else { return }
+      let watch = FileProviderLibraryWatch(
+        database: database, connectionManager: connectionManager)
+      watch.start()
+      fileProviderLibraryWatch = watch
+    }
   #endif
 
   /// - Parameter contentStore: where downloaded files live; `nil` caches no
@@ -68,16 +80,6 @@ public final class AppStack {
       database: database, manager: connectionManager, suspension: suspension,
       contentReclaimer: contentReclaimer)
     self.sessionRegistry = sessionRegistry
-    #if canImport(FileProvider) && os(iOS) && !targetEnvironment(macCatalyst)
-      // Every process that writes the cache (the app, the App Intents and the
-      // Share Extension) tells the File Provider about it.
-      if database.isOnDisk {
-        let watch = FileProviderLibraryWatch(
-          database: database, connectionManager: connectionManager)
-        watch.start()
-        fileProviderLibraryWatch = watch
-      }
-    #endif
     suspension.onExpire = { [weak sessionRegistry] in sessionRegistry?.cancelAllWork() }
     // The rows went with the server; its files are only found by the walk.
     sessionRegistry.onServersRemoved = { _ in

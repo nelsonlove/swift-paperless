@@ -363,6 +363,9 @@ struct MainView: View {
       syncEngine.start()
       // One Files location per server, kept in step with the server list.
       stack.fileProviderDomainSync.start()
+      // Signal Files after this process's library writes (App Intents included:
+      // they run in this process on this stack).
+      stack.startFileProviderLibraryWatch()
       stack.runLaunchMaintenance()
       Task {
         await syncEngine.syncInactiveServers()

@@ -47,4 +47,28 @@ struct AppStackTests {
     #expect(report.removedFiles == 0)
     #expect(!report.walked)
   }
+
+  #if canImport(FileProvider)
+    @Test("A stack starts no File Provider library watch until asked, as in the File Provider extension")
+    func libraryWatchIsOptIn() throws {
+      let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AppStackTests-\(UUID().uuidString)")
+      let stack = AppStack(
+        database: try Database(path: directory.appendingPathComponent("test.sqlite")))
+
+      #expect(stack.fileProviderLibraryWatch == nil)
+
+      stack.startFileProviderLibraryWatch()
+      #expect(stack.fileProviderLibraryWatch != nil)
+    }
+
+    @Test("A stack over the in-memory database never starts the library watch")
+    func libraryWatchNeedsDatabaseOnDisk() throws {
+      let stack = AppStack(database: try Database.inMemory())
+
+      stack.startFileProviderLibraryWatch()
+
+      #expect(stack.fileProviderLibraryWatch == nil)
+    }
+  #endif
 }
