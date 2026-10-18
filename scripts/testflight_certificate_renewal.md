@@ -19,7 +19,7 @@ number, archives, signs, uploads via `asc`, and tags the result), which runs fro
 
 > **Why the cert and profiles are coupled:** the export step
 > (`scripts/beta_ci.sh` + `scripts/ExportOptions.plist`) uses **manual** signing
-> with two named App Store profiles rather than automatic/cloud signing (the CI
+> with three named App Store profiles rather than automatic/cloud signing (the CI
 > API key isn't authorised for cloud signing). Each profile is bound to specific
 > distribution certificate(s). Create a new cert and the profiles that reference
 > only the old one go `INVALID` — so renewal always covers **both**.
@@ -49,6 +49,29 @@ number, archives, signs, uploads via `asc`, and tags the result), which runs fro
   ```bash
   cd "$(mktemp -d)"
   ```
+
+---
+
+## First time only: the File Provider extension's App ID and profile
+
+The File Provider extension (`com.paulgessinger.swift-paperless.FileProviderExtension`) is embedded in the app, so an archive, an export and the fastlane lanes need its App ID and profiles before the first release that contains it. Do this once, before the first such release; afterwards the yearly renewal below covers its profile like the other two.
+
+1. Register the App ID at <https://developer.apple.com/account/resources/identifiers>: type *App IDs*, explicit bundle id `com.paulgessinger.swift-paperless.FileProviderExtension`, with the capabilities **App Groups** (assign `group.com.paulgessinger.swift-paperless`) and **Keychain Sharing**, the same as the Share Extension's App ID.
+2. Create its App Store profile, bound to the current distribution certificate, under the exact name `beta_ci.sh` and `ExportOptions.plist` expect:
+
+   ```bash
+   # In a subshell, so a failed check stops the block, not your shell.
+   (
+   set -euo pipefail
+   CERT_ID="<current Apple Distribution certificate id>"
+   FP_BUNDLE="$(asc bundle-ids list --output json | jq -r '.data[] | select(.attributes.identifier=="com.paulgessinger.swift-paperless.FileProviderExtension") | .id')"
+   [ -n "$FP_BUNDLE" ] || { echo "App ID com.paulgessinger.swift-paperless.FileProviderExtension is not registered (step 1)" >&2; exit 1; }
+   asc profiles create --name "swift-paperless FileProviderExtension AppStore CI" \
+     --profile-type IOS_APP_STORE --bundle "$FP_BUNDLE" --certificate "$CERT_ID"
+   )
+   ```
+
+3. Create the match profiles for the new bundle id (the Matchfile and `Fastfile` list it): `bundle exec fastlane match appstore` and `bundle exec fastlane match development`, run where match may write to its repository.
 
 ---
 
@@ -161,11 +184,18 @@ recreated. A profile can't be edited in place — delete the stale same-named on
 and create a fresh one bound to the new cert:
 
 ```bash
+# In a subshell, so a failed check stops the block, not your shell.
+(
+set -euo pipefail
 # New cert id (from step 2's cert.json) and the bundle-id resource ids.
 NEW_CERT_ID="$(jq -r '.data.id' cert.json)"
 APP_BUNDLE="$(asc bundle-ids list --output json | jq -r '.data[] | select(.attributes.identifier=="com.paulgessinger.swift-paperless") | .id')"
 EXT_BUNDLE="$(asc bundle-ids list --output json | jq -r '.data[] | select(.attributes.identifier=="com.paulgessinger.swift-paperless.ShareExtension") | .id')"
 FP_BUNDLE="$(asc bundle-ids list --output json | jq -r '.data[] | select(.attributes.identifier=="com.paulgessinger.swift-paperless.FileProviderExtension") | .id')"
+
+for id in "$APP_BUNDLE" "$EXT_BUNDLE" "$FP_BUNDLE"; do
+  [ -n "$id" ] || { echo "a bundle id lookup came back empty; is every App ID registered?" >&2; exit 1; }
+done
 
 # Optionally keep the old cert id(s) in --certificate too (comma-separated) so
 # in-flight builds signed with the old cert stay valid during the transition.
@@ -179,6 +209,7 @@ for pair in "swift-paperless AppStore CI|$APP_BUNDLE" \
   asc profiles create --name "$name" --profile-type IOS_APP_STORE \
     --bundle "$bundle" --certificate "$NEW_CERT_ID"
 done
+)
 ```
 
 `beta_ci.sh` re-downloads them by name on every run, so nothing is committed —
