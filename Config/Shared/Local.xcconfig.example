@@ -1,0 +1,14 @@
+// Copy this file to Config/Shared/Local.xcconfig (ignored by git) to build and
+// sign the app on your own device under your own Apple team. Every value here
+// overrides the one in Base.xcconfig and Identity.xcconfig.
+// See docs/development/local-build.md, "Building on your own device".
+
+// Your team id (Xcode > Settings > Accounts, or developer.apple.com > Membership).
+DEVELOPMENT_TEAM = ABCDE12345
+
+// A bundle id prefix you own. The extensions get .ShareExtension and
+// .FileProviderExtension appended to it.
+SWP_BUNDLE_ID_PREFIX = com.example.swift-paperless
+
+// An app group registered to your team; it must start with "group.".
+SWP_APP_GROUP = group.com.example.swift-paperless

@@ -3,7 +3,7 @@
 
 #include "../Shared/AppExtension.xcconfig"
 
-PRODUCT_BUNDLE_IDENTIFIER = com.paulgessinger.swift-paperless.FileProviderExtension
+PRODUCT_BUNDLE_IDENTIFIER = $(SWP_BUNDLE_ID_PREFIX).FileProviderExtension
 
 // iOS only for now: whether macOS loads a File Provider extension embedded in a
 // Mac Catalyst app is unverified, so the Catalyst build does not embed it.

@@ -27,3 +27,6 @@ scripts/frames
 # table on IDE builds (an SPM-package quirk we can't disable). The real catalog is
 # App.xcstrings; this orphan only ever holds junk, so ignore it everywhere.
 Localizable.xcstrings
+
+# A developer's own signing identity (see Config/Shared/Local.xcconfig.example).
+/Config/Shared/Local.xcconfig

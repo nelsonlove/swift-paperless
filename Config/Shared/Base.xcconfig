@@ -1,6 +1,7 @@
 // Project-wide base settings, shared by Debug and Release.
 
 #include "Warnings.xcconfig"
+#include "Identity.xcconfig"
 
 SWIFT_VERSION = 6.0
 SWIFT_STRICT_CONCURRENCY = complete
@@ -23,3 +24,7 @@ LOCALIZATION_PREFERS_STRING_CATALOGS = YES
 STRING_CATALOG_GENERATE_SYMBOLS = YES
 ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES
 DEAD_CODE_STRIPPING = YES
+
+// Optional, ignored by git: a developer's own team, bundle id prefix and app
+// group (see Local.xcconfig.example). Last, so it overrides everything above.
+#include? "Local.xcconfig"

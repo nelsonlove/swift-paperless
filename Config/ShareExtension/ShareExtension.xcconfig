@@ -3,7 +3,7 @@
 
 #include "../Shared/AppExtension.xcconfig"
 
-PRODUCT_BUNDLE_IDENTIFIER = com.paulgessinger.swift-paperless.ShareExtension
+PRODUCT_BUNDLE_IDENTIFIER = $(SWP_BUNDLE_ID_PREFIX).ShareExtension
 
 SUPPORTS_MACCATALYST = YES
 
