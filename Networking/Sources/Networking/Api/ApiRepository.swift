@@ -839,8 +839,16 @@ extension ApiRepository: Repository {
         } catch {
           throw RequestError.normalizingTransportFailure(error, path: NetworkPathProbe.sample())
         }
-        if (response as? HTTPURLResponse)?.statusCode != 304 {
-          try self.validateDownloadResponse(response, request: request)
+        // A 304 is an answer only to a request that sent a validator; one
+        // to a request without it would store an empty body.
+        if checksum == nil || (response as? HTTPURLResponse)?.statusCode != 304 {
+          do {
+            try self.validateDownloadResponse(response, request: request)
+          } catch {
+            // URLSession leaves the body in a file of its own; nobody takes it.
+            try? FileManager.default.removeItem(at: tempURL)
+            throw error
+          }
         }
         return (tempURL, response)
       }
@@ -884,7 +892,14 @@ extension ApiRepository: Repository {
 
       // File first, row second: a file without a row is removed by the repair
       // walk once it is old enough, a row without a file would be served.
-      let url = try contentStore.store(key, movingFrom: tempURL)
+      let url: URL
+      do {
+        url = try contentStore.store(key, movingFrom: tempURL)
+      } catch {
+        // The move did not take the body; nobody else will.
+        try? FileManager.default.removeItem(at: tempURL)
+        throw error
+      }
       await record(checksum: Self.entityTag(of: response) ?? versionChecksum)
       return url
     }

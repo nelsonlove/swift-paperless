@@ -504,6 +504,40 @@ struct ApiRepositoryDownloadTest {
     #expect(try Data(contentsOf: url) == Data("X".utf8))
   }
 
+  @Test
+  func notModifiedWithoutAValidatorIsAnError() async throws {
+    let (store, _) = try Self.makeStore()
+    let repo = Self.makeRepo(contentStore: store)
+    let validators = LastValue<[String?]>([])
+    let storeRef = store
+    let key = Self.canonicalKey(for: Self.makeDocument())
+    let answerNotModified = LastValue(false)
+    DownloadMockURLProtocol.responder = { req in
+      let validator = req.value(forHTTPHeaderField: "If-None-Match")
+      validators.set(validators.value + [validator])
+      if answerNotModified.value {
+        // The reclaimer removes the file while the request is out, and the
+        // server (or a proxy) answers 304 to the full request too.
+        try? storeRef.delete(key)
+        return (Self.response(for: req, status: 304, etag: "\"md5\""), Data())
+      }
+      return (Self.response(for: req, etag: "\"md5\""), Data("X".utf8))
+    }
+    defer { DownloadMockURLProtocol.reset() }
+
+    _ = try await repo.download(
+      document: Self.makeDocument(modified: Date(timeIntervalSince1970: 1)))
+    answerNotModified.set(true)
+    await #expect(throws: RequestError.self) {
+      _ = try await repo.download(
+        document: Self.makeDocument(modified: Date(timeIntervalSince1970: 2)))
+    }
+
+    #expect(validators.value == [nil, "\"md5\"", nil])
+    // No empty body was stored in the file's place.
+    #expect(!store.exists(key))
+  }
+
   @Test(
     arguments: [
       ("\"abc\"", "abc"), ("W/\"abc\"", "abc"), ("abc", "abc"), ("\"\"", nil),

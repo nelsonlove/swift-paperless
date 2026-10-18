@@ -72,36 +72,3 @@ struct ContentHandoverTests {
     #expect(!FileManager.default.fileExists(atPath: destination.path))
   }
 }
-
-@Suite
-struct NotFoundAnswerTests {
-  @Test("A document the database no longer holds is gone")
-  func goneFromDatabase() {
-    #expect(NotFoundAnswer.answer(inDatabase: false, server: nil, localVersionID: 1) == .noSuchItem)
-  }
-
-  @Test("A document the server also answers 404 for is gone")
-  func goneFromServer() {
-    #expect(
-      NotFoundAnswer.answer(inDatabase: true, server: .gone, localVersionID: 1) == .noSuchItem)
-  }
-
-  @Test("A document the server has under another version is kept, with a signal")
-  func versionGone() {
-    #expect(
-      NotFoundAnswer.answer(
-        inDatabase: true, server: .present(currentVersionID: 2), localVersionID: 1)
-        == .serverUnreachable(signal: true))
-  }
-
-  @Test("A document the server has as it is, or could not be asked about, is kept")
-  func kept() {
-    #expect(
-      NotFoundAnswer.answer(
-        inDatabase: true, server: .present(currentVersionID: 1), localVersionID: 1)
-        == .serverUnreachable(signal: false))
-    #expect(
-      NotFoundAnswer.answer(inDatabase: true, server: .unknown, localVersionID: 1)
-        == .serverUnreachable(signal: false))
-  }
-}
