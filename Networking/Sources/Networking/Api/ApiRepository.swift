@@ -840,7 +840,13 @@ extension ApiRepository: Repository {
           throw RequestError.normalizingTransportFailure(error, path: NetworkPathProbe.sample())
         }
         if (response as? HTTPURLResponse)?.statusCode != 304 {
-          try self.validateDownloadResponse(response, request: request)
+          do {
+            try self.validateDownloadResponse(response, request: request)
+          } catch {
+            // URLSession leaves the body in a file of its own; nobody takes it.
+            try? FileManager.default.removeItem(at: tempURL)
+            throw error
+          }
         }
         return (tempURL, response)
       }
