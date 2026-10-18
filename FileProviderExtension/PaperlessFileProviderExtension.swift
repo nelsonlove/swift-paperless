@@ -245,36 +245,9 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
       throw NSFileProviderError(.noSuchItem)
     }
 
-    let original = context.settings.content == .original
-    let repository = try await context.repository()
-    let source: URL
-    if context.needsAuth {
-      // Signed out: serve a cached copy, possibly outdated, or ask for a login.
-      guard let stored = await repository.storedDownload(document: document, original: original)
-      else { throw NSFileProviderError(.notAuthenticated) }
-      source = stored
-    } else {
-      do {
-        // `download` answers from the content store without the network when
-        // the cached file matches `modified`, and otherwise downloads into the
-        // store (ApiRepository.streamDownload).
-        source = try await NetworkTransfer.$category.withValue(.documents) {
-          try await repository.download(document: document, original: original) { fraction in
-            progress.completedUnitCount = Int64(fraction * 100)
-          }
-        }
-      } catch let error as RequestError {
-        // Offline or unreachable: an outdated cached copy beats none.
-        guard case .connectivity = error,
-          let stored = await repository.storedDownload(document: document, original: original)
-        else { throw error }
-        Self.logger.info(
-          "Server unreachable; serving the cached copy of document \(document.id, privacy: .public)"
-        )
-        source = stored
-      }
+    let source = try await context.work {
+      try await Self.content(of: document, context: context, progress: progress)
     }
-
     guard let manager = NSFileProviderManager(for: context.domain) else {
       throw NSFileProviderError(.serverUnreachable)
     }
@@ -288,17 +261,96 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     let cloned = clonefile(source.path, destination.path, 0)
     let cloneError = errno
     // A download that bypassed the content store (no store, or no `modified`
-    // to validate it by) left a temporary file of its own; the clone is the
-    // only copy needed. The store's own files stay.
+    // to validate it by) left a temporary file of its own, in a folder of its
+    // own (`ApiRepository.fetchToTemp`); the clone is the only copy needed.
+    // The store's own files stay.
     let storeRoot = context.contentStore?.root.standardizedFileURL.path
     if storeRoot.map({ !source.standardizedFileURL.path.hasPrefix($0) }) ?? true {
-      try? FileManager.default.removeItem(at: source)
+      Self.removeDownload(source)
     }
     guard cloned == 0 else {
       throw POSIXError(POSIXErrorCode(rawValue: cloneError) ?? .EIO)
     }
     progress.completedUnitCount = 100
     return (destination, item)
+  }
+
+  /// The file to hand over for `document`, in this order:
+  ///
+  /// 1. The stored copy, when the index says it is current: no server row,
+  ///    repository or network needed.
+  /// 2. Signed out (the server row, read now, needs a login): the stored copy,
+  ///    possibly outdated, or NSFileProviderErrorNotAuthenticated.
+  /// 3. A stored copy and a server whose versions were never learned: the
+  ///    stored copy. Building the repository would first probe the server's
+  ///    versions, which can take as long as a network timeout.
+  /// 4. Otherwise a download through the repository (`download` revalidates a
+  ///    stored copy with the server); when the server cannot be reached or
+  ///    refuses the credentials or the certificate, the stored copy.
+  @MainActor
+  private static func content(
+    of document: Document, context: ExtensionContext, progress: Progress
+  ) async throws -> URL {
+    let original = context.settings.content == .original
+    let stored = await context.storedCopy(of: document)
+    if let stored, stored.isFresh {
+      return stored.url
+    }
+    guard let server = try context.serverRow() else {
+      // The server row is gone: nothing can be fetched.
+      throw NSFileProviderError(.notAuthenticated)
+    }
+    if server.needsAuth {
+      // Signed out: serve a cached copy, possibly outdated, or ask for a login.
+      guard let stored else { throw NSFileProviderError(.notAuthenticated) }
+      return stored.url
+    }
+    if let stored, server.stored.knownVersions == nil {
+      logger.info(
+        "Server versions unknown; serving the cached copy of document \(document.id, privacy: .public)"
+      )
+      return stored.url
+    }
+    do {
+      let repository = try await context.repository(for: server)
+      // `download` answers from the content store without the network when
+      // the cached file matches `modified`, and otherwise downloads into the
+      // store (ApiRepository.streamDownload).
+      return try await NetworkTransfer.$category.withValue(.documents) {
+        try await repository.download(document: document, original: original) { fraction in
+          progress.completedUnitCount = Int64(fraction * 100)
+        }
+      }
+    } catch let error as RequestError {
+      // Unreachable, or the server refuses the login or the certificate: an
+      // outdated cached copy beats none. Any other error (the document is
+      // gone, access denied) is the answer.
+      switch error {
+      case .connectivity, .unauthorized, .certificate, .localNetworkDenied:
+        guard let stored else { throw error }
+        logger.info(
+          "Download failed; serving the cached copy of document \(document.id, privacy: .public)"
+        )
+        return stored.url
+      default:
+        throw error
+      }
+    }
+  }
+
+  /// Removes a downloaded file that is not the content store's, and the
+  /// folder of its own `ApiRepository.fetchToTemp` put it in.
+  private static func removeDownload(_ file: URL) {
+    let folder = file.deletingLastPathComponent()
+    let temporary = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    if UUID(uuidString: folder.lastPathComponent) != nil,
+      folder.deletingLastPathComponent().standardizedFileURL.path
+        == temporary.standardizedFileURL.path
+    {
+      try? FileManager.default.removeItem(at: folder)
+    } else {
+      try? FileManager.default.removeItem(at: file)
+    }
   }
 
   // MARK: Thumbnails
@@ -347,9 +399,19 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     {
       data = try? Data(contentsOf: store.url(for: key))
     }
-    if data == nil, !context.needsAuth {
-      data = try await NetworkTransfer.$category.withValue(.thumbnails) {
-        try await context.repository().thumbnailData(document: document)
+    if data == nil {
+      // The server row as the database has it now (a sign-in in the app
+      // takes effect at once); a server that needs a login, or whose
+      // versions were never learned (building the repository would first
+      // probe them), shows no thumbnail rather than wait.
+      data = try await context.work { () async throws -> Data? in
+        guard let server = try context.serverRow(), !server.needsAuth,
+          server.stored.knownVersions != nil
+        else { return nil }
+        let repository = try await context.repository(for: server)
+        return try await NetworkTransfer.$category.withValue(.thumbnails) {
+          try await repository.thumbnailData(document: document)
+        }
       }
     }
     guard let data else { return nil }

@@ -50,10 +50,9 @@ final class LibraryItem: NSObject, NSFileProviderItem {
     itemIdentifier = item.identifier.fileProviderIdentifier
     parentItemIdentifier = item.parent.fileProviderIdentifier
     filename = item.name
+    capabilities = Self.capabilities(isFolder: item.isFolder)
     if item.isFolder {
       contentType = .folder
-      capabilities = NSFileProviderItemCapabilities([.allowsReading, .allowsContentEnumerating])
-        .union(LibraryItem.simulatorFolderCapabilities)
       // A folder needs the execute bit to be entered, as the root has.
       fileSystemFlags = [.userReadable, .userExecutable]
       documentSize = nil
@@ -62,18 +61,30 @@ final class LibraryItem: NSObject, NSFileProviderItem {
     } else {
       let ext = (item.name as NSString).pathExtension
       contentType = UTType(filenameExtension: ext) ?? .data
-      capabilities = NSFileProviderItemCapabilities.allowsReading.union(
-        LibraryItem.simulatorDocumentCapabilities)
       fileSystemFlags = [.userReadable]
       documentSize = size.map { NSNumber(value: $0) }
       creationDate = document?.created
       contentModificationDate = document?.modified
     }
-    // The capabilities are metadata the system keeps; a change to them (a new
-    // build) must reach it, so they are part of the metadata version.
     itemVersion = NSFileProviderItemVersion(
       contentVersion: Data(item.contentVersion.utf8),
-      metadataVersion: Data("\(item.metadataVersion)\n\(capabilities.rawValue)".utf8))
+      metadataVersion: Data("\(item.metadataVersion)\n\(Self.metadataStamp(for: item))".utf8))
+  }
+
+  /// The capabilities of a folder or a document.
+  static func capabilities(isFolder: Bool) -> NSFileProviderItemCapabilities {
+    isFolder
+      ? NSFileProviderItemCapabilities([.allowsReading, .allowsContentEnumerating])
+        .union(simulatorFolderCapabilities)
+      : NSFileProviderItemCapabilities.allowsReading.union(simulatorDocumentCapabilities)
+  }
+
+  /// The metadata the item's version carries beyond its parent and name: its
+  /// capabilities, which the system keeps, so a change to them (a new build)
+  /// must reach it. The change state records the same stamp
+  /// (`TreeSnapshot.Entry.metadata`), so a change to it is sent as an update.
+  static func metadataStamp(for item: TreeItem) -> String {
+    "caps:\(capabilities(isFolder: item.isFolder).rawValue)"
   }
 }
 

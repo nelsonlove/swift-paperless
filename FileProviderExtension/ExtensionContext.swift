@@ -20,11 +20,22 @@ struct LibraryUnavailable: Error, CustomStringConvertible {
   let description: String
 }
 
-/// The library as one read saw it: the tree and the sizes of the server's
-/// cached files.
+/// The library as one read saw it: the tree, the sizes of the server's cached
+/// files, and what the change pages and the working-set pages need, computed
+/// once per read off the main actor.
 struct Library: Sendable {
   let tree: LibraryTree
   let fileSizes: [ContentStore.Key: Int64]
+  /// Every item except the root, with each item's metadata stamp.
+  let snapshot: TreeSnapshot
+  /// The working set in ``ItemPager`` key order.
+  let workingSet: [TreeItem]
+}
+
+/// The server as the database has it now.
+struct ServerRow: Sendable {
+  let stored: StoredConnection
+  let needsAuth: Bool
 }
 
 /// Everything the extension reads, built lazily on the main actor the first
@@ -32,15 +43,27 @@ struct Library: Sendable {
 ///
 /// It uses the process's ``AppStack`` built with the File Provider role, which
 /// skips every launch step (above all closing the app's open sync steps as
-/// interrupted), and never starts the session registry, the sync engine or
-/// the library watch: the app owns syncing and signalling. When the library
-/// cannot be read (the in-memory fallback, a domain that is not a server's,
-/// a failed read), ``library(refresh:)`` throws ``LibraryUnavailable`` and the
-/// callers answer `NSFileProviderErrorServerUnreachable`, never "no such
-/// item", so the system keeps what it has.
+/// interrupted) and every cache upkeep, and never starts the session
+/// registry, the sync engine or the library watch: the app owns syncing and
+/// signalling. When the library cannot be read (the in-memory fallback, a
+/// domain that is not a server's, a failed read), ``library(refresh:)``
+/// throws ``LibraryUnavailable`` and the callers answer
+/// `NSFileProviderErrorServerUnreachable`, never "no such item", so the
+/// system keeps what it has.
+///
+/// The database is shared with the app, which writes it from another
+/// process, so nothing the extension keeps in memory is trusted for long: the
+/// library is reread at the start of each enumeration and change burst, and
+/// the server row (URL, credentials' account, needs-auth) is read from the
+/// database each time a fetch or a thumbnail needs it, never from the
+/// connection manager, whose observation only sees this process's writes.
+///
+/// Database work runs inside ``work(_:)``: the suspension controller is
+/// attached as for a process that is always in the background, so the writer
+/// is open, and an expiring activity held, only while that work runs.
 @MainActor
 final class ExtensionContext {
-  static let logger = Logger(
+  nonisolated static let logger = Logger(
     subsystem: "com.paulgessinger.swift-paperless", category: "FileProvider")
 
   let domain: NSFileProviderDomain
@@ -49,13 +72,21 @@ final class ExtensionContext {
   /// Defaults until per-server settings land (plan section 5, PR 9).
   let settings = FileProviderSettings.default
 
-  private var cached: Library?
+  /// How long the library of a change burst is kept for its next page. The
+  /// system asks for the next page right after the last; a later call
+  /// belongs to a new signal and rereads.
+  static let burstLifetime: TimeInterval = 30
+
+  /// The library reads: single-flight, and never back in time.
+  private let reads = FreshRead<Library>()
   /// The library one burst of change pages works from: kept while
-  /// `moreComing` is true, so the pages of one burst diff against one read.
-  private var burst: Library?
+  /// `moreComing` is true, so the pages of one burst diff against one read;
+  /// cleared when the burst ends, fails, is cancelled or is invalidated, and
+  /// expires after ``burstLifetime``.
+  private var burst = ExpiringValue<Library>(lifetime: ExtensionContext.burstLifetime)
   /// The one creation of the initial change state in flight, which every
-  /// caller of ``changeState()`` awaits.
-  private var stateCreation: Task<ChangeState, any Error>?
+  /// caller of ``changeState()`` joins.
+  private let stateCreation = TaskSlot<ChangeState, any Error>()
 
   init(domain: NSFileProviderDomain) {
     self.domain = domain
@@ -64,6 +95,14 @@ final class ExtensionContext {
 
   /// The process's stack over the on-disk database, or `nil` when only the
   /// in-memory fallback could be built.
+  ///
+  /// Building it attaches the process's suspension controller for an
+  /// extension: always in the background, with time from an expiring
+  /// activity, and the writer suspended at once. An extension gets no
+  /// `UIApplication` lifecycle notifications, and the system may suspend it
+  /// whenever it is not answering a call, so the writer must be closed by
+  /// default and opened only by counted work (``work(_:)``), never left open
+  /// for iOS to find at suspension (`0xDEAD10CC`).
   private(set) lazy var stack: AppStack? = {
     let stack = AppStackHolder.sharedWithInMemoryFallback(
       context: "File Provider", role: .fileProviderExtension)
@@ -71,20 +110,44 @@ final class ExtensionContext {
       Self.logger.fault("File Provider: no on-disk database; the library cannot be read")
       return nil
     }
+    stack.suspension.attach(
+      isInBackground: true,
+      requestTime: ExpiringActivityTime.request(reason: "File Provider database work"))
+    stack.suspension.didEnterBackground()
     return stack
   }()
 
   var contentStore: ContentStore? { stack?.contentReclaimer.store }
 
+  /// Runs `body` as one piece of database work: the writer is open and an
+  /// expiring activity is held while it runs (see ``stack``). Every database
+  /// read and write of the extension, and every repository call that may
+  /// write (a download records its file, a 401 marks the server), runs in
+  /// one.
+  func work<T>(_ body: @MainActor () async throws -> T) async rethrows -> T {
+    guard let stack else { return try await body() }
+    return try await stack.suspension.performBackgroundWork(body)
+  }
+
   // MARK: Library
 
-  /// The library, reread from the database when `refresh` is set or nothing
-  /// is cached. The reads run on the database's queue and the tree is built
-  /// off the main actor.
+  /// The library: a fresh read when `refresh` is set (one that started after
+  /// this call, shared with the callers that asked meanwhile), else the
+  /// newest read so far, or a read when there is none. Never a library older
+  /// than one already handed out.
   ///
   /// - Throws: ``LibraryUnavailable`` when the library cannot be read.
   func library(refresh: Bool) async throws -> Library {
-    if !refresh, let cached { return cached }
+    let read: @MainActor () async throws -> Library = { [weak self] in
+      guard let self else { throw CancellationError() }
+      return try await self.readLibrary()
+    }
+    return refresh ? try await reads.fresh(read) : try await reads.cachedOrFresh(read)
+  }
+
+  /// One read of the database. The reads run on the database's queue and the
+  /// library is built off the main actor.
+  private func readLibrary() async throws -> Library {
     guard let stack else { throw LibraryUnavailable(description: "no on-disk database") }
     guard let serverID else {
       throw LibraryUnavailable(
@@ -93,7 +156,7 @@ final class ExtensionContext {
     let settings = settings
     let rows: LibraryRows
     do {
-      rows = try await stack.suspension.performBackgroundWork {
+      rows = try await work {
         let database = stack.database
         return LibraryRows(
           documents: try await database.documents(serverID: serverID),
@@ -112,22 +175,25 @@ final class ExtensionContext {
       rows.library(settings: settings)
     }.value
     Self.logger.notice(
-      "File Provider: library read, \(rows.documents.count, privacy: .public) documents, \(library.tree.allItems.count, privacy: .public) items"
-    )
-    cached = library
+      "File Provider: library read, \(rows.documents.count, privacy: .public) documents")
     return library
   }
 
-  /// The library for the next page of changes: the burst's when a burst is
-  /// running, else a fresh read.
+  /// The library for the next page of changes: the burst's while a burst is
+  /// running and young, else a fresh read.
   func libraryForChanges() async throws -> Library {
-    if let burst { return burst }
+    if let library = burst.value(at: Date()) { return library }
     return try await library(refresh: true)
   }
 
-  /// Keeps `library` for the next page of a burst, or ends the burst.
-  func setBurst(_ library: Library?) {
-    burst = library
+  /// Keeps `library` for the next page of a burst.
+  func continueBurst(with library: Library) {
+    burst.set(library, at: Date())
+  }
+
+  /// Ends the burst: its library is not used again.
+  func endBurst() {
+    burst.set(nil, at: Date())
   }
 
   /// The content-store key `download` uses for a document: the archive key
@@ -167,22 +233,51 @@ final class ExtensionContext {
 
   // MARK: Server
 
-  /// Whether the server's connection is marked as needing a new login.
-  var needsAuth: Bool {
-    guard let stack, let serverID else { return false }
-    return stack.connectionManager.needsAuthIds.contains(serverID)
+  /// The server row as the database has it now, or `nil` when it is gone.
+  /// Read each time it is needed: the app adds, edits, signs in and signs out
+  /// servers from its own process, which this process's observation of the
+  /// table never sees. Call it inside ``work(_:)``.
+  ///
+  /// - Throws: ``LibraryUnavailable`` when the row cannot be read, which the
+  ///   callers answer with NSFileProviderErrorServerUnreachable.
+  func serverRow() throws -> ServerRow? {
+    guard let stack, let serverID else { return nil }
+    let record: ConnectionRecord?
+    do {
+      record = try stack.database.connection(id: serverID)
+    } catch {
+      Self.logger.error("File Provider: reading the server row failed: \(error)")
+      throw LibraryUnavailable(description: "reading the server row failed: \(error)")
+    }
+    guard let record else { return nil }
+    return ServerRow(stored: StoredConnection(record: record), needsAuth: record.needsAuth)
   }
 
-  /// The server's repository, built through its session as the app builds it
-  /// (`ServerSession.prepareRepository(for:)`).
-  func repository() async throws -> any Repository & CachingBackend {
-    guard let stack, let serverID,
-      let stored = stack.connectionManager.connections[serverID]
-    else {
-      // The server row is gone or unreadable: nothing can be fetched.
-      throw NSFileProviderError(.notAuthenticated)
+  /// The server's repository for `server`, built through its session as the
+  /// app builds it (`ServerSession.prepareRepository(for:)`); a changed URL,
+  /// token or header rebuilds it. The extension's sessions do no cache upkeep
+  /// (`AppStack.Role.fileProviderExtension`).
+  func repository(for server: ServerRow) async throws -> any Repository & CachingBackend {
+    guard let stack else { throw NSFileProviderError(.notAuthenticated) }
+    return try await stack.sessionRegistry.session(for: server.stored.id)
+      .prepareRepository(for: server.stored)
+  }
+
+  /// The stored copy of `document`'s content, if the content store has one,
+  /// and whether the index says it is current for the document's `modified`.
+  /// No network and no repository. Call it inside ``work(_:)``.
+  func storedCopy(of document: Document) async -> (url: URL, isFresh: Bool)? {
+    guard let stack, let store = contentStore, let key = storeKey(for: document),
+      store.exists(key)
+    else { return nil }
+    let url = store.url(for: key)
+    guard let modified = document.modified else { return (url, false) }
+    let fresh = (try? await stack.contentReclaimer.isFresh(key, modified: modified)) ?? false
+    if fresh {
+      // As a download's cache hit records it; a failure costs only the stamp.
+      try? await stack.contentReclaimer.recordAccess(key, at: Date())
     }
-    return try await stack.sessionRegistry.session(for: serverID).prepareRepository(for: stored)
+    return (url, fresh)
   }
 
   // MARK: Change state
@@ -202,39 +297,45 @@ final class ExtensionContext {
       "fp-state-\(domain.identifier.rawValue).json", isDirectory: false)
   }
 
-  func loadState() -> ChangeState? {
-    guard let stateURL, let data = try? Data(contentsOf: stateURL) else { return nil }
-    do {
-      return try JSONDecoder().decode(ChangeState.self, from: data)
-    } catch {
-      Self.logger.error("File Provider: unreadable change state, starting over: \(error)")
-      return nil
-    }
+  /// The stored change state, read and decoded off the main actor.
+  func loadState() async -> ChangeState? {
+    guard let stateURL else { return nil }
+    return await Task.detached(priority: .userInitiated) {
+      guard let data = try? Data(contentsOf: stateURL) else { return nil }
+      do {
+        return try JSONDecoder().decode(ChangeState.self, from: data)
+      } catch {
+        Self.logger.error("File Provider: unreadable change state, starting over: \(error)")
+        return nil
+      }
+    }.value
   }
 
-  func saveState(_ state: ChangeState) throws {
+  /// Encodes and writes the change state off the main actor.
+  func saveState(_ state: ChangeState) async throws {
     guard let stateURL else { throw CocoaError(.fileWriteUnknown) }
-    try FileManager.default.createDirectory(
-      at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
+    try await Task.detached(priority: .userInitiated) {
+      try FileManager.default.createDirectory(
+        at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
+    }.value
   }
 
   /// The stored change state, or a new one from the library as it is now.
-  /// Creating it is single-flight: callers that arrive while it is being
-  /// created await the same creation, so one epoch is saved, not one each.
+  /// Creating it is single-flight (`TaskSlot`): callers that arrive while it
+  /// is being created join the same creation, so one epoch is saved, not one
+  /// each.
   func changeState() async throws -> ChangeState {
-    if let state = loadState() { return state }
-    if let stateCreation { return try await stateCreation.value }
-    let creation = Task { @MainActor in
+    if let state = await loadState() { return state }
+    return try await stateCreation.joinOrStart { [weak self] in
+      guard let self else { throw CancellationError() }
+      // A creation that finished while this caller loaded saved one already.
+      if let state = await self.loadState() { return state }
       let library = try await self.library(refresh: true)
-      let snapshot = await Task.detached { library.tree.snapshot() }.value
-      let state = ChangePager.initialState(current: snapshot)
-      try self.saveState(state)
+      let state = ChangePager.initialState(current: library.snapshot)
+      try await self.saveState(state)
       return state
     }
-    stateCreation = creation
-    defer { stateCreation = nil }
-    return try await creation.value
   }
 }
 
@@ -256,7 +357,10 @@ private struct LibraryRows: Sendable {
     for file in files {
       if let key = file.key { sizes[key] = file.size }
     }
-    return Library(tree: tree, fileSizes: sizes)
+    return Library(
+      tree: tree, fileSizes: sizes,
+      snapshot: tree.snapshot(metadata: { LibraryItem.metadataStamp(for: $0) }),
+      workingSet: ItemPager.sortedByKey(tree.workingSet, key: \.identifier.stringValue))
   }
 }
 
