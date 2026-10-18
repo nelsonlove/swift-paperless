@@ -19,14 +19,17 @@ struct DomainReconcileTests {
       domains: ["a": "Office", "c": "Old server"])
     #expect(result.add == [Domain(identifier: "b", displayName: "Home server")])
     #expect(result.remove == [Domain(identifier: "c", displayName: "Old server")])
-    #expect(result.readd.isEmpty)
+    #expect(result.renameInPlace.isEmpty)
   }
 
-  @Test("A renamed server is re-added with its new name")
+  @Test("A renamed server is renamed in place and never removed")
   func rename() {
     let result = DomainReconcile.reconcile(
-      servers: ["a": "Office (new)"], domains: ["a": "Office"])
-    #expect(result == .init(readd: [Domain(identifier: "a", displayName: "Office (new)")]))
+      servers: ["a": "Office (new)", "b": "Home"], domains: ["a": "Office", "b": "Home"])
+    #expect(
+      result == .init(renameInPlace: [Domain(identifier: "a", displayName: "Office (new)")]))
+    #expect(result.remove.isEmpty)
+    #expect(result.add.isEmpty)
   }
 
   @Test("Matching state gives nothing to do")
