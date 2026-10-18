@@ -52,6 +52,26 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     Self.logger.info(
       "File Provider extension started for domain \(domain.identifier.rawValue, privacy: .public)")
     sweepTemporaryDirectory()
+    signalIfStateIsMissing()
+  }
+
+  /// The system keeps a domain's items and sync anchor across a reinstall of
+  /// the app, but the extension's container, which holds its change state, is
+  /// new. Until something signals, the system goes on showing what it had.
+  /// So an instance with no change state signals the working set: the system
+  /// then asks for changes from its old anchor, gets
+  /// NSFileProviderErrorSyncAnchorExpired, and enumerates afresh.
+  private func signalIfStateIsMissing() {
+    guard let url = ExtensionContext.stateURL(for: domain),
+      !FileManager.default.fileExists(atPath: url.path),
+      let manager = NSFileProviderManager(for: domain)
+    else { return }
+    Self.logger.notice("File Provider: no change state; signalling the working set")
+    manager.signalEnumerator(for: .workingSet) { error in
+      if let error {
+        Self.logger.error("File Provider: signalling the working set failed: \(error)")
+      }
+    }
   }
 
   func invalidate() {

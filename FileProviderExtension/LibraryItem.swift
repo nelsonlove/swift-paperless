@@ -28,16 +28,32 @@ final class LibraryItem: NSObject, NSFileProviderItem {
   let creationDate: Date?
   let contentModificationDate: Date?
 
+  /// Write capabilities given in the iOS Simulator only, where the system
+  /// cannot put a read-only item on disk: in the iOS 26.5 simulator,
+  /// fileproviderd failed every create-item for a folder or document without
+  /// `.allowsWriting` with POSIX EPERM ("cannotCreate(cannotSetMetadata …)"),
+  /// so Files showed the location empty; with these capabilities the folders
+  /// and documents appear. Writes stay refused by `createItem`, `modifyItem`
+  /// and `deleteItem` either way. Device builds keep the item read-only; that
+  /// a device places read-only items is not checked here.
+  #if targetEnvironment(simulator)
+    static let simulatorFolderCapabilities: NSFileProviderItemCapabilities = [
+      .allowsAddingSubItems, .allowsWriting,
+    ]
+    static let simulatorDocumentCapabilities: NSFileProviderItemCapabilities = [.allowsWriting]
+  #else
+    static let simulatorFolderCapabilities: NSFileProviderItemCapabilities = []
+    static let simulatorDocumentCapabilities: NSFileProviderItemCapabilities = []
+  #endif
+
   init(_ item: TreeItem, document: Document?, size: Int64?) {
     itemIdentifier = item.identifier.fileProviderIdentifier
     parentItemIdentifier = item.parent.fileProviderIdentifier
     filename = item.name
-    itemVersion = NSFileProviderItemVersion(
-      contentVersion: Data(item.contentVersion.utf8),
-      metadataVersion: Data(item.metadataVersion.utf8))
     if item.isFolder {
       contentType = .folder
-      capabilities = [.allowsReading, .allowsContentEnumerating]
+      capabilities = NSFileProviderItemCapabilities([.allowsReading, .allowsContentEnumerating])
+        .union(LibraryItem.simulatorFolderCapabilities)
       // A folder needs the execute bit to be entered, as the root has.
       fileSystemFlags = [.userReadable, .userExecutable]
       documentSize = nil
@@ -46,12 +62,18 @@ final class LibraryItem: NSObject, NSFileProviderItem {
     } else {
       let ext = (item.name as NSString).pathExtension
       contentType = UTType(filenameExtension: ext) ?? .data
-      capabilities = [.allowsReading]
+      capabilities = NSFileProviderItemCapabilities.allowsReading.union(
+        LibraryItem.simulatorDocumentCapabilities)
       fileSystemFlags = [.userReadable]
       documentSize = size.map { NSNumber(value: $0) }
       creationDate = document?.created
       contentModificationDate = document?.modified
     }
+    // The capabilities are metadata the system keeps; a change to them (a new
+    // build) must reach it, so they are part of the metadata version.
+    itemVersion = NSFileProviderItemVersion(
+      contentVersion: Data(item.contentVersion.utf8),
+      metadataVersion: Data("\(item.metadataVersion)\n\(capabilities.rawValue)".utf8))
   }
 }
 

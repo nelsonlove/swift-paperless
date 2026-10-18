@@ -190,7 +190,9 @@ final class ExtensionContext {
   /// The change state lives in the extension's own container, one file per
   /// domain, outside the app group: it records what this extension told the
   /// system and nothing else reads it.
-  private var stateURL: URL? {
+  private var stateURL: URL? { Self.stateURL(for: domain) }
+
+  nonisolated static func stateURL(for domain: NSFileProviderDomain) -> URL? {
     guard
       let directory = FileManager.default.urls(
         for: .applicationSupportDirectory, in: .userDomainMask
