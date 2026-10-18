@@ -220,4 +220,13 @@ struct DatabaseConnectionsTests {
     // consumer — observeConnections() swallows that case deliberately.
     _ = try await task.value
   }
+
+  @Test("fetchConnection reads the row asynchronously, nil when absent")
+  func fetchConnectionAsync() async throws {
+    let database = try makeDatabase()
+    let row = record()
+    #expect(try await database.fetchConnection(id: row.id) == nil)
+    try database.upsertConnection(row)
+    #expect(try await database.fetchConnection(id: row.id) == row)
+  }
 }
