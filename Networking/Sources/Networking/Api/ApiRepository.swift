@@ -935,14 +935,23 @@ extension ApiRepository: Repository {
   /// done, so a folder is only taken once it is surely no longer in use.
   public nonisolated static let temporaryDownloadLifetime: TimeInterval = 24 * 60 * 60
 
-  /// Removes the folders ``fetchToTemp`` made (a UUID-named folder directly
-  /// in the temporary directory) that are older than `age`, and returns how
-  /// many it removed. The app calls it at launch; nothing else removes them
-  /// in the app. Other entries of the temporary directory are left alone.
+  /// The folder ``fetchToTemp`` puts its download folders in, one
+  /// UUID-named folder per download: `paperless-downloads` in the process's
+  /// temporary directory. Nothing else is put there, so the sweep can never
+  /// take another component's files.
+  public nonisolated static var temporaryDownloadsDirectory: URL {
+    URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+      .appendingPathComponent("paperless-downloads", isDirectory: true)
+  }
+
+  /// Removes the folders ``fetchToTemp`` made (UUID-named folders in
+  /// ``temporaryDownloadsDirectory``) that are older than `age`, and returns
+  /// how many it removed. The app calls it at launch and the File Provider
+  /// extension at init. Nothing outside that folder is touched.
   @discardableResult
   public nonisolated static func sweepTemporaryDownloads(
     olderThan age: TimeInterval = temporaryDownloadLifetime,
-    in directory: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+    in directory: URL = temporaryDownloadsDirectory,
     now: Date = Date()
   ) -> Int {
     let fileManager = FileManager.default
@@ -979,7 +988,13 @@ extension ApiRepository: Repository {
     } catch {
       throw RequestError.normalizingTransportFailure(error, path: NetworkPathProbe.sample())
     }
-    try validateDownloadResponse(response, request: request)
+    do {
+      try validateDownloadResponse(response, request: request)
+    } catch {
+      // URLSession leaves the body in a file of its own; nobody takes it.
+      try? FileManager.default.removeItem(at: tempURL)
+      throw error
+    }
 
     // A folder of its own per download, so the file keeps the server's name
     // (which the preview shows) while two downloads of same-named files, at
@@ -987,11 +1002,17 @@ extension ApiRepository: Repository {
     // each other's document. The File Provider extension removes the folder
     // once it has handed the file over; in the app,
     // `sweepTemporaryDownloads` removes it at a later launch.
-    let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    let folder = Self.temporaryDownloadsDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     let dest = folder.appendingPathComponent(response.suggestedFilename ?? "document.pdf")
-    try FileManager.default.moveItem(at: tempURL, to: dest)
+    do {
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+      try FileManager.default.moveItem(at: tempURL, to: dest)
+    } catch {
+      try? FileManager.default.removeItem(at: tempURL)
+      try? FileManager.default.removeItem(at: folder)
+      throw error
+    }
     return dest
   }
 

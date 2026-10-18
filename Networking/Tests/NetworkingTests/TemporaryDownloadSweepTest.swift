@@ -45,4 +45,13 @@ struct TemporaryDownloadSweepTest {
     #expect(FileManager.default.fileExists(atPath: other.path))
     #expect(FileManager.default.fileExists(atPath: file.path))
   }
+
+  @Test("Downloads live in a folder of their own, which is what the sweep walks")
+  func dedicatedFolder() {
+    let downloads = ApiRepository.temporaryDownloadsDirectory
+    #expect(downloads.lastPathComponent == "paperless-downloads")
+    #expect(
+      downloads.deletingLastPathComponent().standardizedFileURL.path
+        == URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path)
+  }
 }
