@@ -23,6 +23,7 @@ let package = Package(
     .package(path: "../DataModel"),
     .package(path: "../Networking"),
     .package(path: "../Persistence"),
+    .package(path: "../FileProviderCore"),
     .package(url: "https://github.com/kean/Nuke", .upToNextMajor(from: "12.0.0")),
     .package(url: "https://github.com/groue/Semaphore", .upToNextMajor(from: "0.1.0")),
     .package(
@@ -36,6 +37,7 @@ let package = Package(
         .product(name: "DataModel", package: "DataModel"),
         .product(name: "Networking", package: "Networking"),
         .product(name: "Persistence", package: "Persistence"),
+        .product(name: "FileProviderCore", package: "FileProviderCore"),
         .product(name: "Nuke", package: "Nuke"),
         .product(name: "Semaphore", package: "Semaphore"),
       ],

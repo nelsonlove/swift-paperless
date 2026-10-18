@@ -32,6 +32,9 @@ struct ShareView: View {
     // never `start()`ed: an extension has no reason to react to connection edits
     // made elsewhere.
     let stack = AppStackHolder.sharedWithInMemoryFallback(context: "Share Extension")
+    #if canImport(FileProvider)
+      stack.startFileProviderLibraryWatch()
+    #endif
     _connectionManager = State(initialValue: stack.connectionManager)
     _store = State(initialValue: DocumentStore(registry: stack.sessionRegistry))
   }

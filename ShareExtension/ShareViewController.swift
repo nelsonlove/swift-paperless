@@ -26,7 +26,16 @@ class ShareViewController: UIViewController {
     let shareView = ShareView(
       attachmentManager: attachmentManager,
       callback: {
-        self.extensionContext!.completeRequest(returningItems: nil, completionHandler: nil)
+        #if canImport(FileProvider)
+          // The extension may be ended right after completing, before a
+          // coalesced trailing signal is due; send it first.
+          Task { @MainActor in
+            await FileProviderSignaler.shared.flush()
+            self.extensionContext!.completeRequest(returningItems: nil, completionHandler: nil)
+          }
+        #else
+          self.extensionContext!.completeRequest(returningItems: nil, completionHandler: nil)
+        #endif
       })
 
     childView = UIHostingController(rootView: shareView)

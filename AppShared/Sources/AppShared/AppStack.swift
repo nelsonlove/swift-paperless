@@ -50,6 +50,33 @@ public final class AppStack {
     case fileProviderExtension
   }
 
+  /// The role this stack was built with.
+  public let role: Role
+
+  #if canImport(FileProvider)
+    /// Lazy, so only the app, which starts it, keeps File Provider domains;
+    /// the extensions never add or remove one.
+    public private(set) lazy var fileProviderDomainSync = FileProviderDomainSync(
+      connectionManager: connectionManager, database: database)
+
+    /// Signals the File Provider after this process writes the library.
+    /// Opt-in through ``startFileProviderLibraryWatch()``, so a stack built in
+    /// the File Provider extension never signals itself.
+    public private(set) var fileProviderLibraryWatch: FileProviderLibraryWatch?
+
+    /// Start signalling the File Provider after this process's library writes.
+    /// The app and the Share Extension call this; the File Provider extension
+    /// does not. Does nothing over a database that is not on disk.
+    public func startFileProviderLibraryWatch() {
+      // The File Provider extension never signals itself, even if asked.
+      guard role == .app, database.isOnDisk, fileProviderLibraryWatch == nil else { return }
+      let watch = FileProviderLibraryWatch(
+        database: database, connectionManager: connectionManager)
+      watch.start()
+      fileProviderLibraryWatch = watch
+    }
+  #endif
+
   /// - Parameters:
   ///   - contentStore: where downloaded files live; `nil` caches no files.
   ///     Only the on-disk database may be paired with the app-group store: an
@@ -62,6 +89,7 @@ public final class AppStack {
     contentStore: ContentStore? = nil, role: Role = .app
   ) {
     self.database = database
+    self.role = role
     let suspension = suspension ?? DatabaseSuspensionController()
     self.suspension = suspension
     let connectionManager = ConnectionManager(database: database)
