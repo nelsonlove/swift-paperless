@@ -134,6 +134,12 @@ public enum ItemPager {
     return (items[start..<end], next)
   }
 
+  /// Whether `token` starts a new enumeration (any token this type did not
+  /// make, or offset 0), the moment to reread the library.
+  public static func isFirstPage(_ token: Data) -> Bool {
+    offset(of: token) == 0
+  }
+
   static func offset(of token: Data) -> Int {
     guard let text = String(data: token, encoding: .utf8), text.hasPrefix(prefix),
       let value = Int(text.dropFirst(prefix.count)), value >= 0

@@ -137,6 +137,8 @@ struct ItemPagerTests {
     #expect(pages == 3)
     #expect(ItemPager.page([Int](), token: Data(), size: 3).next == nil)
     #expect(Array(ItemPager.page(items, token: Data("offset:99".utf8), size: 3).items) == [])
+    #expect(ItemPager.isFirstPage(Data("anything".utf8)))
+    #expect(!ItemPager.isFirstPage(ItemPager.page(items, token: Data(), size: 3).next!))
   }
 }
 
