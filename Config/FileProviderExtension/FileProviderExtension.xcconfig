@@ -1,0 +1,15 @@
+// FileProviderExtension (app extension) — common settings shared by Debug and Release.
+// The settings every extension shares are in Shared/AppExtension.xcconfig.
+
+#include "../Shared/AppExtension.xcconfig"
+
+PRODUCT_BUNDLE_IDENTIFIER = com.paulgessinger.swift-paperless.FileProviderExtension
+
+// iOS only for now: whether macOS loads a File Provider extension embedded in a
+// Mac Catalyst app is unverified, so the Catalyst build does not embed it.
+SUPPORTS_MACCATALYST = NO
+
+CODE_SIGN_ENTITLEMENTS = FileProviderExtension/FileProviderExtension.entitlements
+PROVISIONING_PROFILE_SPECIFIER = $(SWP_FILE_PROVIDER_EXTENSION_PROVISIONING_PROFILE)
+
+INFOPLIST_FILE = FileProviderExtension/Info.plist

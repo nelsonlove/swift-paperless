@@ -1,0 +1,31 @@
+// Settings every app extension shares (Share Extension, File Provider
+// extension), for Debug and Release. Each extension's own xcconfig includes
+// this and sets only its per-target keys: bundle id, entitlements, provisioning
+// profile, Info.plist and platform support.
+
+#include "Version.xcconfig"
+
+PRODUCT_NAME = $(TARGET_NAME)
+
+IPHONEOS_DEPLOYMENT_TARGET = 17.0
+TARGETED_DEVICE_FAMILY = 1,2
+SDKROOT = iphoneos
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO
+SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO
+SKIP_INSTALL = YES
+
+CODE_SIGN_IDENTITY = $(SWP_CODE_SIGN_IDENTITY)
+CODE_SIGN_STYLE = $(SWP_CODE_SIGN_STYLE)
+
+ENABLE_APP_SANDBOX = YES
+ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES
+
+LOCALIZED_STRING_SWIFTUI_SUPPORT = NO
+SWIFT_EMIT_LOC_STRINGS = NO
+
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../../Frameworks
+
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_KEY_CFBundleDisplayName = Paperless
+INFOPLIST_KEY_NSHumanReadableCopyright =
