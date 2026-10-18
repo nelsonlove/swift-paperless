@@ -45,9 +45,14 @@ public enum FolderKey: Hashable, Sendable {
 /// - `tag:<id>/doc:<id>`, `corr:<id>/doc:<id>`, `type:<id>/doc:<id>`: secondary
 ///   appearances of a document
 ///
-/// `init?(rawValue:)` accepts exactly the strings `rawValue` produces (ids in
-/// canonical decimal form, no leading zeros or signs), so the round trip is
-/// lossless in both directions.
+/// `init?(stringValue:)` accepts exactly the strings `stringValue` produces
+/// (ids in canonical decimal form, no leading zeros or signs), so the round
+/// trip is lossless in both directions.
+///
+/// The type is deliberately not `RawRepresentable`: the standard library's
+/// `RawRepresentable` defaults would make `==` and `hash(into:)` build the
+/// string for every dictionary lookup. Equality and hashing are the
+/// synthesized ones, which switch on the cases and their payloads.
 public enum ItemIdentifier: Hashable, Sendable {
   case root
   case folder(FolderKey)
@@ -72,10 +77,11 @@ public enum ItemIdentifier: Hashable, Sendable {
   }
 }
 
-extension ItemIdentifier: RawRepresentable {
+extension ItemIdentifier {
   private static let noneKey = "none"
 
-  public var rawValue: String {
+  /// The identifier's string form, as handed to File Provider.
+  public var stringValue: String {
     switch self {
     case .root:
       return "root"
@@ -92,15 +98,16 @@ extension ItemIdentifier: RawRepresentable {
     }
   }
 
-  public init?(rawValue: String) {
-    if rawValue == "root" {
+  /// Parses a string from ``stringValue``; `nil` for anything else.
+  public init?(stringValue string: String) {
+    if string == "root" {
       self = .root
       return
     }
 
-    guard let colon = rawValue.firstIndex(of: ":") else { return nil }
-    let head = rawValue[..<colon]
-    let tail = rawValue[rawValue.index(after: colon)...]
+    guard let colon = string.firstIndex(of: ":") else { return nil }
+    let head = string[..<colon]
+    let tail = string[string.index(after: colon)...]
 
     switch head {
     case "doc":
@@ -210,14 +217,14 @@ extension ItemIdentifier: RawRepresentable {
 }
 
 extension ItemIdentifier: CustomStringConvertible {
-  public var description: String { rawValue }
+  public var description: String { stringValue }
 }
 
 extension ItemIdentifier: Codable {
   public init(from decoder: any Decoder) throws {
     let container = try decoder.singleValueContainer()
     let raw = try container.decode(String.self)
-    guard let value = ItemIdentifier(rawValue: raw) else {
+    guard let value = ItemIdentifier(stringValue: raw) else {
       throw DecodingError.dataCorruptedError(
         in: container, debugDescription: "Invalid item identifier \(raw)")
     }
@@ -226,17 +233,17 @@ extension ItemIdentifier: Codable {
 
   public func encode(to encoder: any Encoder) throws {
     var container = encoder.singleValueContainer()
-    try container.encode(rawValue)
+    try container.encode(stringValue)
   }
 }
 
 extension ItemIdentifier: CodingKeyRepresentable {
   public var codingKey: any CodingKey {
-    IdentifierCodingKey(stringValue: rawValue)
+    IdentifierCodingKey(stringValue: stringValue)
   }
 
   public init?<T: CodingKey>(codingKey: T) {
-    self.init(rawValue: codingKey.stringValue)
+    self.init(stringValue: codingKey.stringValue)
   }
 }
 

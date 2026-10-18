@@ -464,7 +464,7 @@ extension LibraryTree {
           children.map {
             FileNaming.Entry(
               stem: $0.stem, fileExtension: $0.fileExtension, disambiguator: $0.disambiguator,
-              uniqueKey: $0.identifier.rawValue, keepsName: $0.keepsName)
+              uniqueKey: $0.identifier.stringValue, keepsName: $0.keepsName)
           })
         var resolved: [TreeItem] = []
         for (node, name) in zip(children, names) {
@@ -488,7 +488,7 @@ extension LibraryTree {
     switch lhs.name.localizedStandardCompare(rhs.name) {
     case .orderedAscending: return true
     case .orderedDescending: return false
-    case .orderedSame: return lhs.identifier.rawValue < rhs.identifier.rawValue
+    case .orderedSame: return lhs.identifier.stringValue < rhs.identifier.stringValue
     }
   }
 }

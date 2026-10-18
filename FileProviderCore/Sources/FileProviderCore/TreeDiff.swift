@@ -35,7 +35,7 @@ public struct TreeDiff: Equatable, Sendable {
     updated.sort { lhs, rhs in
       if lhs.depth != rhs.depth { return lhs.depth < rhs.depth }
       if lhs.isFolder != rhs.isFolder { return lhs.isFolder }
-      return lhs.id.rawValue < rhs.id.rawValue
+      return lhs.id.stringValue < rhs.id.stringValue
     }
 
     var deleted: [(id: ItemIdentifier, depth: Int)] = []
@@ -44,7 +44,7 @@ public struct TreeDiff: Equatable, Sendable {
     }
     deleted.sort { lhs, rhs in
       if lhs.depth != rhs.depth { return lhs.depth > rhs.depth }
-      return lhs.id.rawValue < rhs.id.rawValue
+      return lhs.id.stringValue < rhs.id.stringValue
     }
 
     self.updated = updated.map(\.id)
