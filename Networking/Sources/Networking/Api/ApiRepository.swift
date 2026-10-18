@@ -929,6 +929,43 @@ extension ApiRepository: Repository {
     }
   }
 
+  /// How old a ``fetchToTemp`` folder must be before
+  /// ``sweepTemporaryDownloads(olderThan:in:now:)`` removes it: the app hands
+  /// the file to a preview or a share sheet and does not know when they are
+  /// done, so a folder is only taken once it is surely no longer in use.
+  public nonisolated static let temporaryDownloadLifetime: TimeInterval = 24 * 60 * 60
+
+  /// Removes the folders ``fetchToTemp`` made (a UUID-named folder directly
+  /// in the temporary directory) that are older than `age`, and returns how
+  /// many it removed. The app calls it at launch; nothing else removes them
+  /// in the app. Other entries of the temporary directory are left alone.
+  @discardableResult
+  public nonisolated static func sweepTemporaryDownloads(
+    olderThan age: TimeInterval = temporaryDownloadLifetime,
+    in directory: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+    now: Date = Date()
+  ) -> Int {
+    let fileManager = FileManager.default
+    guard
+      let entries = try? fileManager.contentsOfDirectory(
+        at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey])
+    else { return 0 }
+    let cutoff = now.addingTimeInterval(-age)
+    var removed = 0
+    for url in entries where UUID(uuidString: url.lastPathComponent) != nil {
+      let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey])
+      guard values?.isDirectory == true,
+        let modified = values?.contentModificationDate, modified < cutoff
+      else { continue }
+      if (try? fileManager.removeItem(at: url)) != nil { removed += 1 }
+    }
+    if removed > 0 {
+      Logger.networking.info(
+        "Removed \(removed, privacy: .public) stale download folder(s) from the temporary directory")
+    }
+    return removed
+  }
+
   private func fetchToTemp(
     documentID: UInt, original: Bool, version: UInt?,
     progress: (@Sendable (Double) -> Void)?
@@ -947,7 +984,9 @@ extension ApiRepository: Repository {
     // A folder of its own per download, so the file keeps the server's name
     // (which the preview shows) while two downloads of same-named files, at
     // the same time or one after the other, never share a path and hand over
-    // each other's document.
+    // each other's document. The File Provider extension removes the folder
+    // once it has handed the file over; in the app,
+    // `sweepTemporaryDownloads` removes it at a later launch.
     let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
