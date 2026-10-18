@@ -124,6 +124,88 @@ struct TreeDiffTests {
     expectFoldersFirst(result, Fixtures.tree(FileProviderSettings(layout: .year)))
   }
 
+  /// Replays changes the way the File Provider system applies them: an
+  /// update sets the item's entry; a deletion removes the item and every item
+  /// whose parent chain, at that moment, runs through it.
+  private func replay(_ changes: [TreeDiff.Change], on old: TreeSnapshot, new: TreeSnapshot)
+    -> TreeSnapshot
+  {
+    var state = old
+    for change in changes {
+      switch change {
+      case .update(let id):
+        state.entries[id] = new.entries[id]
+      case .delete(let id):
+        let doomed = state.entries.keys.filter { candidate in
+          var current = candidate
+          var steps = 0
+          while steps < 64 {
+            if current == id { return true }
+            guard let parent = state.entries[current]?.parent else { return false }
+            current = parent
+            steps += 1
+          }
+          return false
+        }
+        for item in doomed { state.entries[item] = nil }
+      }
+    }
+    return state
+  }
+
+  @Test("Updates before deletions keep a document moved out of a folder that empties")
+  func moveOutOfEmptiedFolder() {
+    // City Library (correspondent 3) holds only document 12; it moves to Acme.
+    var changed = Fixtures.documents
+    changed[2].correspondent = 1
+    let flat = FileProviderSettings(layout: .correspondent, browseFolders: [])
+    let old = Fixtures.tree(flat).snapshot()
+    let new = Fixtures.tree(flat, documents: changed).snapshot()
+    let diff = TreeDiff(from: old, to: new)
+    #expect(diff.changes.contains(.update(.document(12))))
+    #expect(diff.changes.contains(.delete(.folder(.correspondent(3)))))
+
+    // Every update precedes every deletion in the one list the API offers.
+    let firstDelete = diff.changes.firstIndex {
+      if case .delete = $0 { return true }
+      return false
+    }
+    let lastUpdate = diff.changes.lastIndex {
+      if case .update = $0 { return true }
+      return false
+    }
+    #expect(lastUpdate! < firstDelete!)
+
+    // Applies changes one at a time and reports whether document 12 was ever
+    // missing on the way, which for the system means it was deleted (its
+    // file, Recents entry and bookmarks gone) rather than moved.
+    func walk(_ changes: [TreeDiff.Change]) -> (final: TreeSnapshot, everLost: Bool) {
+      var state = old
+      var everLost = false
+      for change in changes {
+        state = replay([change], on: state, new: new)
+        if state.entries[.document(12)] == nil { everLost = true }
+      }
+      return (state, everLost)
+    }
+
+    // The documented order (the API's only order): the document is moved and
+    // never lost, and the result is the new tree.
+    let documented = walk(diff.changes)
+    #expect(!documented.everLost)
+    #expect(documented.final.entries[.document(12)]?.parent == .folder(.correspondent(1)))
+    #expect(documented.final == new)
+
+    // The wrong order, deletions first, cannot come out of the API. Built by
+    // hand, it deletes the document together with its old folder; the update
+    // after that can only bring it back as a new item.
+    let deletionsFirst =
+      diff.changes.filter { if case .delete = $0 { true } else { false } }
+      + diff.changes.filter { if case .update = $0 { true } else { false } }
+    let wrong = walk(deletionsFirst)
+    #expect(wrong.everLost)
+  }
+
   @Test("Snapshots survive a JSON round trip")
   func snapshotCodable() throws {
     let snapshot = Fixtures.tree().snapshot()
