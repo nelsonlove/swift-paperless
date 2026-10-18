@@ -609,6 +609,36 @@ extension Database {
       .fetchSet(db)
   }
 
+  /// Every cached document of a server, decoded like `document(serverID:id:)`,
+  /// ordered by id ascending.
+  public func documents(serverID: UUID) async throws -> [Document] {
+    try await wrappingAsync("documents(serverID:)") {
+      try await writer.read { try Self.fetchDocuments($0, serverID: serverID, after: nil, limit: nil) }
+    }
+  }
+
+  /// One page of a server's cached documents, ordered by id ascending: ids
+  /// greater than `after` (`nil` starts from the beginning), at most `limit`.
+  public func documents(
+    serverID: UUID, after: UInt?, limit: Int
+  ) async throws -> [Document] {
+    try await wrappingAsync("documents(after:limit:)") {
+      try await writer.read {
+        try Self.fetchDocuments($0, serverID: serverID, after: after, limit: limit)
+      }
+    }
+  }
+
+  private static func fetchDocuments(
+    _ db: GRDB.Database, serverID: UUID, after: UInt?, limit: Int?
+  ) throws -> [Document] {
+    var request = DocumentRecord.filter(Column("server_id") == serverID)
+    if let after { request = request.filter(Column("id") > after) }
+    request = request.order(Column("id"))
+    if let limit { request = request.limit(limit) }
+    return try request.fetchAll(db).map(\.domain)
+  }
+
   /// Baseline the changed-metadata delta from the cache: store the latest
   /// `modified` among this server's cached documents as its delta watermark and
   /// return it. Returns `nil`, storing nothing, if no cached row has one.
