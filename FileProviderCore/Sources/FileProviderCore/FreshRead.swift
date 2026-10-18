@@ -168,19 +168,32 @@ extension ExpiringValue: Sendable where Value: Sendable {}
 
 /// What one burst of change pages keeps between its pages, for at most
 /// `lifetime`: the library the pages diff against, with the generation of the
-/// read that produced it (``LatestWins/generation``), and the change state as
-/// last saved, so a page neither rereads nor decodes the state.
+/// read that produced it (``LatestWins/generation``), the change state as last
+/// saved, and the runs that remain (``ChangePager/Page/remaining``), so a page
+/// neither rereads the library, nor decodes the state, nor diffs again.
 ///
-/// The library is handed out only while no newer read has been cached
-/// (`newestGeneration`): a lookup or an enumeration may have read the library
-/// after the burst started, and a change page must never report from a
-/// library older than one the system was already given items from. The state
+/// The library is used only while no newer read has been cached: a lookup or
+/// an enumeration may have read the library after the burst started, and a
+/// change page must never report from a library older than one the system was
+/// already given items from. Then the newer cached library is used, at its
+/// generation, with a new diff (the plan was for the old library). The state
 /// stays good either way: it is what was saved.
 public struct ChangeBurst<Library> {
   public struct Entry {
     public var library: Library
     public var generation: UInt64
     public var state: ChangeState
+    public var plan: [[TreeDiff.Change]]
+  }
+
+  /// Where the next page of changes gets its library.
+  public enum Source {
+    /// The burst's library and plan: no newer read is cached.
+    case burst(Library, generation: UInt64, plan: [[TreeDiff.Change]])
+    /// A newer read was cached during the burst: that library, diffed afresh.
+    case cached(Library, generation: UInt64)
+    /// No burst (none, ended or expired): read the library afresh.
+    case read
   }
 
   private var stored: ExpiringValue<Entry>
@@ -189,15 +202,13 @@ public struct ChangeBurst<Library> {
     stored = ExpiringValue(lifetime: lifetime)
   }
 
-  /// The burst's library and its generation, unless there is no burst, it
-  /// expired, or its library is older than `newestGeneration`.
-  public func library(at now: Date, newestGeneration: UInt64) -> (
-    library: Library, generation: UInt64
-  )? {
-    guard let entry = stored.value(at: now), entry.generation >= newestGeneration else {
-      return nil
+  /// The library for the next page at `now`, given the newest cached read.
+  public func source(at now: Date, newest: (library: Library, generation: UInt64)?) -> Source {
+    guard let entry = stored.value(at: now) else { return .read }
+    if let newest, newest.generation > entry.generation {
+      return .cached(newest.library, generation: newest.generation)
     }
-    return (entry.library, entry.generation)
+    return .burst(entry.library, generation: entry.generation, plan: entry.plan)
   }
 
   /// The change state the burst last saved, unless there is no burst or it
@@ -206,12 +217,14 @@ public struct ChangeBurst<Library> {
     stored.value(at: now)?.state
   }
 
-  /// Keeps `library` (from the read of `generation`) and `state` for the
-  /// next page, as of `now`.
+  /// Keeps `library` (from the read of `generation`), `state` and the runs
+  /// that remain for the next page, as of `now`.
   public mutating func keep(
-    library: Library, generation: UInt64, state: ChangeState, at now: Date
+    library: Library, generation: UInt64, state: ChangeState, plan: [[TreeDiff.Change]],
+    at now: Date
   ) {
-    stored.set(Entry(library: library, generation: generation, state: state), at: now)
+    stored.set(
+      Entry(library: library, generation: generation, state: state, plan: plan), at: now)
   }
 
   /// Ends the burst.
@@ -221,4 +234,5 @@ public struct ChangeBurst<Library> {
 }
 
 extension ChangeBurst.Entry: Sendable where Library: Sendable {}
+extension ChangeBurst.Source: Sendable where Library: Sendable {}
 extension ChangeBurst: Sendable where Library: Sendable {}

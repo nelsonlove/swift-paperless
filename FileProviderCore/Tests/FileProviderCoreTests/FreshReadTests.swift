@@ -159,25 +159,50 @@ struct ExpiringValueTests {
 @Suite
 struct ChangeBurstTests {
   private let state = ChangePager.initialState(current: TreeSnapshot(), epoch: "e")
+  private let plan: [[TreeDiff.Change]] = [[], [.update(.document(1))], []]
 
-  @Test("The burst's library is handed out only while no newer read is cached")
-  func neverOlderThanCached() {
+  @Test("The burst's library and plan are used while no newer read is cached")
+  func burstWhileNewest() {
     var burst = ChangeBurst<String>(lifetime: 30)
     let now = Date()
-    burst.keep(library: "burst", generation: 2, state: state, at: now)
-    #expect(burst.library(at: now, newestGeneration: 2)?.library == "burst")
-    #expect(burst.library(at: now, newestGeneration: 1)?.library == "burst")
-    #expect(burst.library(at: now, newestGeneration: 3) == nil)
+    burst.keep(library: "burst", generation: 2, state: state, plan: plan, at: now)
+    guard
+      case .burst(let library, let generation, let kept) =
+        burst.source(at: now, newest: ("burst", 2))
+    else {
+      Issue.record("expected the burst")
+      return
+    }
+    #expect(library == "burst")
+    #expect(generation == 2)
+    #expect(kept == plan)
+  }
+
+  @Test("A newer cached read is used at its generation, without a new read")
+  func newerCachedRead() {
+    var burst = ChangeBurst<String>(lifetime: 30)
+    let now = Date()
+    burst.keep(library: "burst", generation: 2, state: state, plan: plan, at: now)
+    guard case .cached(let library, let generation) = burst.source(at: now, newest: ("new", 3))
+    else {
+      Issue.record("expected the cached read")
+      return
+    }
+    #expect(library == "new")
+    #expect(generation == 3)
     // The saved state is still good.
     #expect(burst.state(at: now) == state)
   }
 
-  @Test("An expired or ended burst hands out nothing")
+  @Test("An expired or ended burst reads afresh")
   func expiresAndEnds() {
     var burst = ChangeBurst<String>(lifetime: 30)
     let now = Date()
-    burst.keep(library: "burst", generation: 1, state: state, at: now)
-    #expect(burst.library(at: now.addingTimeInterval(31), newestGeneration: 0) == nil)
+    burst.keep(library: "burst", generation: 1, state: state, plan: plan, at: now)
+    guard case .read = burst.source(at: now.addingTimeInterval(31), newest: ("burst", 1)) else {
+      Issue.record("expected a read")
+      return
+    }
     #expect(burst.state(at: now.addingTimeInterval(31)) == nil)
     burst.end(at: now)
     #expect(burst.state(at: now) == nil)

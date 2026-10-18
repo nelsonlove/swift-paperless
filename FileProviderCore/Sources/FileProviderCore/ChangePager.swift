@@ -22,26 +22,16 @@ public struct ChangeState: Codable, Equatable, Sendable {
   public var snapshot: TreeSnapshot
   public var previousCounter: UInt64?
   public var previousSnapshot: TreeSnapshot?
-  /// The index in ``TreeDiff/runs`` of a run that was only partly sent (it
-  /// was larger than the batch), so the next page resumes it before any other
-  /// run. `nil` when the last page ended a run. Optional so a state saved
-  /// before the field existed still decodes.
-  public var resumeRun: Int?
-  /// ``resumeRun`` as it was at the previous anchor.
-  public var previousResumeRun: Int?
 
   public init(
     epoch: String, counter: UInt64, snapshot: TreeSnapshot, previousCounter: UInt64? = nil,
-    previousSnapshot: TreeSnapshot? = nil, resumeRun: Int? = nil,
-    previousResumeRun: Int? = nil
+    previousSnapshot: TreeSnapshot? = nil
   ) {
     self.epoch = epoch
     self.counter = counter
     self.snapshot = snapshot
     self.previousCounter = previousCounter
     self.previousSnapshot = previousSnapshot
-    self.resumeRun = resumeRun
-    self.previousResumeRun = previousResumeRun
   }
 
   /// The anchor that names this state.
@@ -54,16 +44,21 @@ public struct ChangeState: Codable, Equatable, Sendable {
 /// Each call reports the first non-empty run between the stored snapshot and
 /// the current tree (at most `batchSize` changes of it), advances the anchor,
 /// and stores the snapshot as it stands after what it sent, so the next call
-/// starts after it and never resends it. A run cut by the batch size is
-/// resumed by the next call before any other run (``ChangeState/resumeRun``):
-/// the diff from the stored snapshot holds exactly the rest of that run, in
-/// the same order, so nothing is sent twice or skipped. The caller ends each
-/// page with `finishEnumeratingChanges(upTo:moreComing:)`, `moreComing` being
-/// true while changes remain; the page break is what orders the runs (see
-/// ``TreeDiff``). The system suggests a batch size
-/// (NSFileProviderEnumerating.h, `suggestedBatchSize`, lines 116-132 in the
-/// iOS 26.5 SDK: "it is suggested it split the list of changes into several
-/// batches").
+/// starts after it and never resends it. The caller ends each page with
+/// `finishEnumeratingChanges(upTo:moreComing:)`, `moreComing` being true while
+/// changes remain; the page break is what orders the runs (see ``TreeDiff``).
+/// The system suggests a batch size (NSFileProviderEnumerating.h,
+/// `suggestedBatchSize`, lines 116-132 in the iOS 26.5 SDK: "it is suggested
+/// it split the list of changes into several batches").
+///
+/// Within one burst (one library read) the diff is computed once: each page
+/// returns the runs that remain (``Page/remaining``), and the next page of the
+/// burst passes them back as its `plan` and slices them, so a cut run goes on
+/// where it stopped, in its order. A page with no plan (a new burst, a newer
+/// read) diffs the stored snapshot against the tree afresh and starts with
+/// its first non-empty run: deletions that are safe now, including any a
+/// newer read added, go before the rest of a cut updates run, so a sibling
+/// renamed to a deleted item's name never shares it with that item.
 public enum ChangePager {
   public enum Failure: Error, Equatable {
     /// The anchor is unknown, from another state, or from the stub
@@ -82,6 +77,9 @@ public enum ChangePager {
     /// The state to persist before finishing the page. When ``run`` is empty
     /// it is the state passed in, and need not be saved again.
     public var state: ChangeState
+    /// The runs left after this page, from ``state``'s snapshot to the same
+    /// tree: the `plan` for the next page of the burst.
+    public var remaining: [[TreeDiff.Change]]
   }
 
   static let anchorPrefix = "fp1:"
@@ -99,59 +97,62 @@ public enum ChangePager {
   }
 
   /// The next page of changes from `anchor`, at most `batchSize` changes
-  /// (a size below 1 counts as 1). The diff is computed once.
+  /// (a size below 1 counts as 1).
   ///
+  /// - Parameter plan: the ``Page/remaining`` runs of the previous page of
+  ///   this burst, valid only for the same `state` and `current`; used when
+  ///   `anchor` is the state's current anchor, in place of a new diff.
   /// - Throws: ``Failure/anchorExpired`` unless `anchor` is the state's
   ///   current or previous anchor.
   public static func nextPage(
-    state: ChangeState, from anchor: Data, current: TreeSnapshot, batchSize: Int = .max
+    state: ChangeState, from anchor: Data, current: TreeSnapshot, batchSize: Int = .max,
+    plan: [[TreeDiff.Change]]? = nil
   ) throws -> Page {
     let base: TreeSnapshot
     let baseCounter: UInt64
-    let resumeRun: Int?
+    let runs: [[TreeDiff.Change]]
+    let fromPrevious: Bool
     if anchor == state.anchor {
       base = state.snapshot
       baseCounter = state.counter
-      resumeRun = state.resumeRun
+      runs = plan ?? TreeDiff(from: base, to: current).runs
+      fromPrevious = false
     } else if let previousCounter = state.previousCounter,
       let previousSnapshot = state.previousSnapshot,
       anchor == Self.anchor(epoch: state.epoch, counter: previousCounter)
     {
       base = previousSnapshot
       baseCounter = previousCounter
-      resumeRun = state.previousResumeRun
+      runs = TreeDiff(from: base, to: current).runs
+      fromPrevious = true
     } else {
       throw Failure.anchorExpired
     }
 
-    let diff = TreeDiff(from: base, to: current)
-    // A run cut by the batch size goes on first. Without it, a part of the
-    // updates run that moved every survivor out of a folder would turn that
-    // folder's deletion safe, and run 1 would jump ahead of the other updates.
-    let index: Int
-    if let resumeRun, diff.runs.indices.contains(resumeRun), !diff.runs[resumeRun].isEmpty {
-      index = resumeRun
-    } else if let first = diff.runs.firstIndex(where: { !$0.isEmpty }) {
-      index = first
-    } else {
+    guard let index = runs.firstIndex(where: { !$0.isEmpty }) else {
       // Up to date: the same anchor, nothing more (the header expects the
       // anchor to change only when something was reported).
-      return Page(run: [], anchor: anchor, moreComing: false, state: state)
+      return Page(run: [], anchor: anchor, moreComing: false, state: state, remaining: [])
     }
 
-    let full = diff.runs[index]
+    let full = runs[index]
     let run = Array(full.prefix(max(1, batchSize)))
-    let cut = run.count < full.count
-    let after = base.applying(run: run, from: current)
-    let next = ChangeState(
-      epoch: state.epoch, counter: max(state.counter, baseCounter) + 1, snapshot: after,
-      previousCounter: baseCounter, previousSnapshot: base, resumeRun: cut ? index : nil,
-      previousResumeRun: resumeRun)
-    // What remains is the rest of this run and every other run: the changes
-    // of different runs never share an identifier.
-    let moreComing =
-      cut || diff.runs.indices.contains { $0 != index && !diff.runs[$0].isEmpty }
-    return Page(run: run, anchor: next.anchor, moreComing: moreComing, state: next)
+    var remaining = runs
+    remaining[index] = Array(full.dropFirst(run.count))
+
+    var next = state
+    next.counter = max(state.counter, baseCounter) + 1
+    next.snapshot = base.applying(run: run, from: current)
+    if !fromPrevious {
+      // The base becomes the previous state. Asked again from the previous
+      // anchor, the previous state is the base already and stays as it is.
+      next.previousCounter = baseCounter
+      next.previousSnapshot = base
+    }
+    let moreComing = remaining.contains { !$0.isEmpty }
+    return Page(
+      run: run, anchor: next.anchor, moreComing: moreComing, state: next,
+      remaining: moreComing ? remaining : [])
   }
 }
 
