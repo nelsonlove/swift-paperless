@@ -63,3 +63,20 @@ xcrun simctl io "$UDID" screenshot build/screenshot.png
 ```
 
 `build/` is ignored by git, so the screenshot stays out of commits.
+
+The bundle id above is the default one. If you set your own prefix (next section), launch `<your prefix>` instead.
+
+## Building on your own device
+
+The app's identity is build settings, not source: `Config/Shared/Identity.xcconfig` sets the bundle id prefix (`SWP_BUNDLE_ID_PREFIX`), the app group (`SWP_APP_GROUP`) and the keychain group (`SWP_KEYCHAIN_GROUP`, which is `$(AppIdentifierPrefix)$(SWP_BUNDLE_ID_PREFIX)`). The app is `<prefix>`, the extensions are `<prefix>.ShareExtension` and `<prefix>.FileProviderExtension`, and the entitlements and the Info.plist files take the group from the same settings. The Swift code reads the prefix and the group at run time from the Info.plist keys `SWPBundleIDPrefix` and `SWPAppGroupIdentifier` (see `Common/Sources/Common/AppIdentity.swift`), so nothing in the source names them.
+
+To sign a build for your own iPhone or iPad under your own Apple team:
+
+1. Copy `Config/Shared/Local.xcconfig.example` to `Config/Shared/Local.xcconfig`. Git ignores that file, and `Base.xcconfig` includes it last, so its values override the defaults.
+2. In it, set `DEVELOPMENT_TEAM` to your team id, `SWP_BUNDLE_ID_PREFIX` to a bundle id prefix you own (for example `com.example.swift-paperless`), and `SWP_APP_GROUP` to an app group id (for example `group.com.example.swift-paperless`).
+3. At developer.apple.com > Certificates, Identifiers & Profiles, register the app group, then three explicit App IDs: `<prefix>`, `<prefix>.ShareExtension` and `<prefix>.FileProviderExtension`. Turn on App Groups for all three and assign your group. Keychain Sharing needs no App ID capability; the keychain group is derived from your team prefix and bundle id prefix. With a paid team, automatic signing can register the App IDs for you on the first build, but you must still create the app group and assign it.
+4. Run `xcodegen generate`, open `swift-paperless.xcodeproj`, choose your device and build the `swift-paperless` scheme. Signing is automatic (`SWP_CODE_SIGN_STYLE = Automatic` in `Base.xcconfig`), so Xcode makes the development profiles.
+
+To check what a build will use, run `xcodebuild -showBuildSettings -project swift-paperless.xcodeproj -target FileProviderExtension | grep -E 'PRODUCT_BUNDLE_IDENTIFIER|SWP_'`.
+
+Some things stay upstream's on purpose. The release tooling (`fastlane/`, `scripts/beta_ci.sh`, `scripts/ExportOptions.plist`, `scripts/next_build_number.sh`) signs and uploads upstream's App Store app only. `scripts/first_build.sh` uninstalls the default bundle id before its test. The URL scheme `x-paperless` is the same in every build, so with two builds on one device iOS picks one of them for those links.
