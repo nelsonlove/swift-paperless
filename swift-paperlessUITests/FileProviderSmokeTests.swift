@@ -32,6 +32,12 @@ final class FileProviderSmokeTests: XCTestCase {
 
   private var step = 0
 
+  /// Launch arguments for English (Files may ignore them; see first_build.sh).
+  private let english = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+
+  /// The location's names for failure messages.
+  private let locationDescription = "Mock Paperless or Paperless"
+
   override func setUp() async throws {
     continueAfterFailure = false
   }
@@ -62,7 +68,8 @@ final class FileProviderSmokeTests: XCTestCase {
 
   func testMockLibraryIsListedInFiles() throws {
     // 1. Seed the library; the app's list shows the seeded documents.
-    paperless.launchArguments = ["--seed-mock-library"]
+    paperless.launchArguments = ["--seed-mock-library"] + english
+    files.launchArguments = english
     paperless.launch()
     let seeded = element(in: paperless, labelsStartingWith: [documentTitle])
     require(
@@ -78,7 +85,7 @@ final class FileProviderSmokeTests: XCTestCase {
     require(browse.waitForExistence(timeout: 15), "No Browse tab")
     browse.tap()
     // A second tap returns to the top of Browse when Files remembered a folder.
-    if !isVisible(element(in: files, labels: ["Locations"]), timeout: 2) {
+    if !isHittable(element(in: files, labels: ["Locations"]), timeout: 2) {
       browse.tap()
     }
     snapshot(files, "browse")
@@ -92,24 +99,32 @@ final class FileProviderSmokeTests: XCTestCase {
     }
     require(
       waitForLocation(browse: browse, timeout: 15),
-      "No \(locationNames.joined(separator: " or ")) location in Browse")
+      "No \(locationDescription) location in Browse")
     snapshot(files, "location listed")
 
     // 4. Open the location: the canonical folders and the browse folders.
     location.tap()
-    // iOS 26.5 asks to turn a disabled location on when it is opened.
+    // iOS 26.5 asks to turn a disabled location on when it is opened: wait
+    // for whichever comes first, the prompt or the folder.
     let turnOn = element(in: files, labels: ["Turn On", "Turn on"], types: [.button])
-    if isVisible(turnOn, timeout: 5) {
-      snapshot(files, "turn on prompt")
-      turnOn.tap()
-    }
     let acme = element(in: files, labelsStartingWith: [correspondentFolder])
+    let deadline = Date().addingTimeInterval(60)
+    while Date() < deadline {
+      if acme.exists { break }
+      if turnOn.exists && turnOn.isHittable {
+        snapshot(files, "turn on prompt")
+        turnOn.tap()
+        break
+      }
+      Thread.sleep(forTimeInterval: 0.5)
+    }
     require(
-      acme.waitForExistence(timeout: 60), "No \(correspondentFolder) folder in \(locationNames.joined(separator: " or "))")
+      acme.waitForExistence(timeout: 60),
+      "No \(correspondentFolder) folder in \(locationDescription)")
     for name in browseFolders {
       require(
         element(in: files, labelsStartingWith: [name]).waitForExistence(timeout: 10),
-        "No \(name) folder in \(locationNames.joined(separator: " or "))")
+        "No \(name) folder in \(locationDescription)")
     }
     snapshot(files, "location opened")
 
@@ -151,14 +166,19 @@ final class FileProviderSmokeTests: XCTestCase {
     let row = locationCell()
     require(
       row.waitForExistence(timeout: 30),
-      "No \(locationNames.joined(separator: " or ")) row while editing")
+      "No \(locationDescription) row while editing")
+    // Scroll (bounded) until the row can be tapped, so its frame is on screen.
+    var swipes = 0
+    while !row.isHittable && swipes < 8 {
+      files.swipeUp()
+      swipes += 1
+    }
+    require(row.isHittable, "The \(locationDescription) row is not reachable while editing")
     let rowFrame = row.frame
     let rowSwitch = files.switches.allElementsBoundByIndex.first {
       $0.isHittable && $0.frame.midY >= rowFrame.minY && $0.frame.midY <= rowFrame.maxY
     }
-    require(
-      rowSwitch != nil,
-      "No hittable switch on the \(locationNames.joined(separator: " or ")) row")
+    require(rowSwitch != nil, "No hittable switch on the \(locationDescription) row")
     if let rowSwitch, (rowSwitch.value as? String) != "1" { rowSwitch.tap() }
     snapshot(files, "location switched on")
 
@@ -198,8 +218,9 @@ final class FileProviderSmokeTests: XCTestCase {
       .firstMatch
   }
 
-  private func isVisible(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
-    element.waitForExistence(timeout: timeout)
+  /// True when the element appears within the timeout and can be tapped.
+  private func isHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    element.waitForExistence(timeout: timeout) && element.isHittable
   }
 
   private func snapshot(_ app: XCUIApplication, _ name: String) {
