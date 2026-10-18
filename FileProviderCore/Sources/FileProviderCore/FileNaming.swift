@@ -12,7 +12,8 @@ public enum FileNaming {
   /// this leaves room for a collision suffix and an extension.
   public static let maxStemBytes = 200
 
-  /// The longest extension kept, in characters.
+  /// The longest extension kept, in characters (and in bytes when a name is
+  /// composed).
   public static let maxExtensionLength = 16
 
   /// The extension used for archived documents and as the fallback.
@@ -188,7 +189,16 @@ public enum FileNaming {
   /// What still collides after that (a title that mimics a suffix, or a
   /// repeated disambiguator) is settled in a fixed order: `keepsName` entries
   /// first, then by `uniqueKey`. The first keeps its name; each later one gets
-  /// ` (#<uniqueKey>)`, with a counter appended if even that is taken.
+  /// ` (#<hash>-<n>)`, where `<hash>` is a short stable hash of `uniqueKey`
+  /// (so no `/` or `:` from an identifier reaches the name) and `<n>` is the
+  /// first counter from 1 that gives a free name.
+  ///
+  /// That last step always ends with a free name within `entries.count`
+  /// tries: the suffix and the extension are reserved before the stem is cut,
+  /// so the counter is never cut away, and two counters give two different
+  /// names (they differ in the digits before the closing parenthesis, or one
+  /// has a `-` where the other has a digit). At most `entries.count - 1`
+  /// names are taken, so one of the first `entries.count` counters is free.
   public static func resolveCollisions(_ entries: [Entry]) -> [String] {
     var suffixes = [String](repeating: "", count: entries.count)
     func name(_ index: Int) -> String {
@@ -213,7 +223,7 @@ public enum FileNaming {
         let keepers = group.filter { entries[$0].keepsName && suffixes[$0].isEmpty }
         for index in group where suffixes[index].isEmpty {
           if keepers.count == 1, keepers[0] == index { continue }
-          suffixes[index] = " (#\(entries[index].disambiguator))"
+          suffixes[index] = " (#\(suffixToken(entries[index].disambiguator)))"
           changed = true
         }
       }
@@ -236,28 +246,57 @@ public enum FileNaming {
     }
     for index in ordered {
       if used.insert(comparisonKey(name(index))).inserted { continue }
-      let key = entries[index].uniqueKey
-      // Each counter gives a different name, and only finitely many are
-      // taken, so this ends.
-      var counter = 1
-      repeat {
-        suffixes[index] = counter == 1 ? " (#\(key))" : " (#\(key) \(counter))"
-        counter += 1
-      } while !used.insert(comparisonKey(name(index))).inserted
+      let hash = stableHash(entries[index].uniqueKey)
+      var settled = false
+      for counter in 1...entries.count {
+        suffixes[index] = " (#\(hash)-\(counter))"
+        if used.insert(comparisonKey(name(index))).inserted {
+          settled = true
+          break
+        }
+      }
+      // Unreachable by the argument in the doc comment.
+      assert(settled, "no free name for \(entries[index].uniqueKey)")
     }
     return entries.indices.map(name)
   }
 
-  /// Joins a stem, a suffix and an extension, cutting the stem on a character
-  /// boundary so the whole name fits in ``maxNameBytes``.
+  /// The longest disambiguator text kept in a ` (#<disambiguator>)` suffix.
+  static let maxDisambiguatorBytes = 40
+
+  /// A disambiguator made safe for a name: sanitized (no `/` or `:`) and
+  /// short, or a stable hash when nothing usable is left.
+  static func suffixToken(_ disambiguator: String) -> String {
+    guard let clean = sanitize(disambiguator) else { return stableHash(disambiguator) }
+    guard clean.utf8.count > maxDisambiguatorBytes else { return clean }
+    return stableHash(disambiguator)
+  }
+
+  /// FNV-1a over the UTF-8 bytes, folded to 32 bits, as 8 lowercase hex
+  /// digits. Stable across runs and processes, unlike `Hasher`.
+  static func stableHash(_ string: String) -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in string.utf8 {
+      hash ^= UInt64(byte)
+      hash &*= 0x0000_0100_0000_01b3
+    }
+    let folded = UInt32(truncatingIfNeeded: hash ^ (hash >> 32))
+    let hex = String(folded, radix: 16)
+    return String(repeating: "0", count: 8 - hex.count) + hex
+  }
+
+  /// Joins a stem, a suffix and an extension so the whole name fits in
+  /// ``maxNameBytes``. The suffix and the extension are reserved first (the
+  /// extension cut to ``maxExtensionLength`` bytes), and only the stem is cut,
+  /// on a character boundary, so a suffix is never cut away.
   static func compose(stem: String, suffix: String, fileExtension: String?) -> String {
-    let tail = suffix + (fileExtension.map { ".\($0)" } ?? "")
+    let tail = suffix + (fileExtension.map { ".\(truncate($0, maxBytes: maxExtensionLength))" } ?? "")
     let budget = max(0, maxNameBytes - tail.utf8.count)
     var cut = truncate(stem, maxBytes: budget)
     if cut.utf8.count < stem.utf8.count {
       cut = cut.trimmingCharacters(in: .whitespaces)
     }
-    return truncate(cut + tail, maxBytes: maxNameBytes)
+    return cut + tail
   }
 
   /// The key two names are compared by: NFC, then case-folded.

@@ -197,6 +197,8 @@ struct FileNamingTests {
     }
     let names = FileNaming.resolveCollisions(entries)
     #expect(names.count == 13)
+    // The fallback suffix never carries the identifier's ":" or "/".
+    #expect(names.allSatisfy { !$0.contains(":") && !$0.contains("/") })
     #expect(Set(names.map(FileNaming.comparisonKey)).count == names.count)
     #expect(names.allSatisfy { $0.utf8.count <= FileNaming.maxNameBytes })
     #expect(FileNaming.resolveCollisions(entries.reversed()) == names.reversed())
@@ -216,6 +218,46 @@ struct FileNamingTests {
       #expect(name.utf8.count <= FileNaming.maxNameBytes)
       #expect(name.hasSuffix(").abcdefghijklmnop"))
     }
+  }
+
+  @Test("Identifiers and disambiguators with / and : never reach a name")
+  func noSeparatorsInSuffixes() {
+    let entries = [
+      FileNaming.Entry(stem: "A", fileExtension: nil, disambiguator: "12/2026",
+        uniqueKey: "dir:correspondentYear:12/2026"),
+      FileNaming.Entry(stem: "A", fileExtension: nil, disambiguator: "12/2026",
+        uniqueKey: "dir:correspondentYear:none/2026"),
+      FileNaming.Entry(stem: "A (#12-2026)", fileExtension: nil, disambiguator: "x:y",
+        uniqueKey: "tag:1/doc:2"),
+    ]
+    let names = FileNaming.resolveCollisions(entries)
+    #expect(Set(names.map(FileNaming.comparisonKey)).count == 3)
+    #expect(names.allSatisfy { !$0.contains(":") && !$0.contains("/") })
+  }
+
+  @Test("A huge extension or key cannot stall the last resort")
+  func hugeTail() {
+    let ext = String(repeating: "x", count: 240)
+    let key = String(repeating: "k", count: 500)
+    let entries = (0..<20).map {
+      FileNaming.Entry(stem: "Same", fileExtension: ext, disambiguator: "1",
+        uniqueKey: "\(key)\($0)")
+    }
+    let names = FileNaming.resolveCollisions(entries)
+    #expect(Set(names.map(FileNaming.comparisonKey)).count == 20)
+    #expect(names.allSatisfy { $0.utf8.count <= FileNaming.maxNameBytes })
+    #expect(names.allSatisfy { $0.hasSuffix("." + String(repeating: "x", count: 16)) })
+  }
+
+  @Test("The stable hash is fixed across runs")
+  func stableHash() {
+    #expect(FileNaming.stableHash("doc:1") == FileNaming.stableHash("doc:1"))
+    #expect(FileNaming.stableHash("doc:1") != FileNaming.stableHash("doc:2"))
+    // Reference values from an independent FNV-1a 64 implementation, folded
+    // to 32 bits by xor of the halves.
+    #expect(FileNaming.stableHash("") == "4fd0bfc1")
+    #expect(FileNaming.stableHash("a") == "296230c0")
+    #expect(FileNaming.stableHash("doc:1") == "30540a0f")
   }
 
   @Test("An entry that keeps its name wins; the others take the suffix")
