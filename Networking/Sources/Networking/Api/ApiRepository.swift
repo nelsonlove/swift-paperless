@@ -839,7 +839,9 @@ extension ApiRepository: Repository {
         } catch {
           throw RequestError.normalizingTransportFailure(error, path: NetworkPathProbe.sample())
         }
-        if (response as? HTTPURLResponse)?.statusCode != 304 {
+        // A 304 is an answer only to a request that sent a validator; one
+        // to a request without it would store an empty body.
+        if checksum == nil || (response as? HTTPURLResponse)?.statusCode != 304 {
           do {
             try self.validateDownloadResponse(response, request: request)
           } catch {
