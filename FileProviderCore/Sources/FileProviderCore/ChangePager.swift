@@ -146,6 +146,40 @@ public enum ItemPager {
     return (pageItems.map(\.item), next)
   }
 
+  /// ``page(_:key:token:size:)`` for items already in ascending order of
+  /// `key` (the extension sorts the working set once per library read): finds
+  /// the start by binary search and sorts nothing. The result is the same.
+  public static func page<Element>(
+    sortedByKey items: [Element], key: (Element) -> String, token: Data, size: Int
+  ) -> (items: [Element], next: Data?) {
+    let size = max(1, size)
+    var start = 0
+    if let after = lastKey(of: token) {
+      // The first index whose key is greater than `after`.
+      var high = items.count
+      while start < high {
+        let middle = (start + high) / 2
+        if key(items[middle]) <= after {
+          start = middle + 1
+        } else {
+          high = middle
+        }
+      }
+    }
+    let end = min(items.count, start + size)
+    let pageItems = Array(items[start..<end])
+    let next =
+      end < items.count ? pageItems.last.map { Data("\(prefix)\(key($0))".utf8) } : nil
+    return (pageItems, next)
+  }
+
+  /// Sorts `items` in the order ``page(sortedByKey:key:token:size:)`` expects.
+  public static func sortedByKey<Element>(_ items: [Element], key: (Element) -> String)
+    -> [Element]
+  {
+    items.map { (key: key($0), item: $0) }.sorted { $0.key < $1.key }.map(\.item)
+  }
+
   /// Whether `token` starts a new enumeration (any token this type did not
   /// make), the moment to reread the library.
   public static func isFirstPage(_ token: Data) -> Bool {

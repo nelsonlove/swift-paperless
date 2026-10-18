@@ -183,3 +183,72 @@ struct ItemVersionTests {
     #expect(folder.contentVersion == "folder")
   }
 }
+
+@Suite
+struct SortedItemPagerTests {
+  @Test("Paging a presorted list gives the pages the sorting pager gives")
+  func sameAsSortingPager() {
+    let items = ["k", "b", "x", "a", "m", "c", "z", "d"]
+    let sorted = ItemPager.sortedByKey(items, key: { $0 })
+    #expect(sorted == items.sorted())
+    for size in 1...9 {
+      var token = Data()
+      var tokenSorted = Data()
+      while true {
+        let expected = ItemPager.page(items, key: { $0 }, token: token, size: size)
+        let actual = ItemPager.page(
+          sortedByKey: sorted, key: { $0 }, token: tokenSorted, size: size)
+        #expect(actual.items == expected.items)
+        #expect(actual.next == expected.next)
+        guard let next = expected.next, let nextSorted = actual.next else { break }
+        token = next
+        tokenSorted = nextSorted
+      }
+    }
+    // A token naming a key that is gone starts after where it would be.
+    let after = ItemPager.page(
+      sortedByKey: sorted, key: { $0 }, token: Data("after:e".utf8), size: 2)
+    #expect(after.items == ["k", "m"])
+  }
+}
+
+@Suite
+struct SnapshotMetadataTests {
+  private func stamp(_ item: TreeItem) -> String? { item.isFolder ? "folder-caps" : "doc-caps" }
+
+  @Test("A change to an item's metadata stamp alone is an update")
+  func metadataChangeIsUpdate() {
+    let tree = Fixtures.tree()
+    let old = tree.snapshot(metadata: stamp)
+    let new = tree.snapshot(metadata: { $0.isFolder ? "folder-caps-2" : "doc-caps" })
+    let diff = TreeDiff(from: old, to: new)
+    let folders = Set(tree.allItems.filter(\.isFolder).map(\.identifier))
+    #expect(!folders.isEmpty)
+    #expect(Set(diff.updated) == folders)
+    #expect(diff.deleted.isEmpty)
+  }
+
+  @Test("A state saved before the stamp existed decodes, then updates every item once")
+  func oldStateDecodesAndUpdates() throws {
+    let tree = Fixtures.tree()
+    let oldFormat = ChangePager.initialState(current: tree.snapshot(), epoch: "e")
+    let data = try JSONEncoder().encode(oldFormat)
+    #expect(!String(decoding: data, as: UTF8.self).contains("metadata"))
+    let decoded = try JSONDecoder().decode(ChangeState.self, from: data)
+    #expect(decoded.snapshot.entries.values.allSatisfy { $0.metadata == nil })
+
+    let current = tree.snapshot(metadata: stamp)
+    let page = try ChangePager.nextPage(state: decoded, from: decoded.anchor, current: current)
+    #expect(Set(page.run) == Set(current.entries.keys.map { TreeDiff.Change.update($0) }))
+    #expect(!page.moreComing)
+    let after = try ChangePager.nextPage(state: page.state, from: page.anchor, current: current)
+    #expect(after.run.isEmpty)
+  }
+
+  @Test("The stamp survives a JSON round trip")
+  func stampRoundTrip() throws {
+    let snapshot = Fixtures.tree().snapshot(metadata: stamp)
+    let data = try JSONEncoder().encode(snapshot)
+    #expect(try JSONDecoder().decode(TreeSnapshot.self, from: data) == snapshot)
+  }
+}
