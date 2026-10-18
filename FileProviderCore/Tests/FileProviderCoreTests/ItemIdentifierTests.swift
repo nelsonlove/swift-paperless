@@ -44,8 +44,8 @@ struct ItemIdentifierTests {
   @Test("Every identifier encodes to its documented string and decodes back")
   func roundTrip() {
     for (identifier, raw) in Self.cases {
-      #expect(identifier.rawValue == raw)
-      #expect(ItemIdentifier(rawValue: raw) == identifier)
+      #expect(identifier.stringValue == raw)
+      #expect(ItemIdentifier(stringValue: raw) == identifier)
     }
   }
 
@@ -61,7 +61,7 @@ struct ItemIdentifierTests {
       "dir:year:-01", "dir:year:+1", "doc:-0",
     ])
   func rejects(_ raw: String) {
-    #expect(ItemIdentifier(rawValue: raw) == nil)
+    #expect(ItemIdentifier(stringValue: raw) == nil)
   }
 
   @Test("Codable uses the string form, also as dictionary keys")
@@ -71,6 +71,24 @@ struct ItemIdentifierTests {
     let object = try JSONSerialization.jsonObject(with: data) as? [String: Int]
     #expect(object == ["doc:1": 1, "browse:tag": 2])
     #expect(try JSONDecoder().decode([ItemIdentifier: Int].self, from: data) == map)
+  }
+
+  @Test("Equality and hashing work on the cases, not on a string form")
+  func hashingWithoutStrings() {
+    // Not RawRepresentable, so the standard library's string-based == and
+    // hash(into:) defaults cannot apply.
+    #expect(!((ItemIdentifier.root as Any) is any RawRepresentable))
+
+    let identifiers = Self.cases.map(\.0)
+    #expect(Set(identifiers).count == identifiers.count)
+    for (index, identifier) in identifiers.enumerated() {
+      let copy = ItemIdentifier(stringValue: identifier.stringValue)
+      #expect(copy == identifier)
+      #expect(copy?.hashValue == identifier.hashValue)
+      for other in identifiers[(index + 1)...] {
+        #expect(identifier != other)
+      }
+    }
   }
 
   @Test("Document ids are exposed for documents and appearances only")

@@ -132,32 +132,77 @@ public struct LibraryTree: Sendable {
     (items, childIDs) = builder.finish()
   }
 
-  /// Which of two copies of one document id to keep: the later `modified`
-  /// (none counts as oldest), then the greater title, then the greater full
-  /// description, which is a total order over the values that build the tree.
-  static func isPreferred(_ candidate: Document, over kept: Document) -> Bool {
-    let candidateModified = candidate.modified ?? .distantPast
-    let keptModified = kept.modified ?? .distantPast
-    if candidateModified != keptModified { return candidateModified > keptModified }
-    if candidate.title != kept.title { return candidate.title > kept.title }
+  /// The one rule for which of two copies of one id to keep, so the choice
+  /// never depends on input order: when the type has a modified date, the
+  /// later one wins, and a copy with a date beats one without (a missing date
+  /// counts as `Date.distantPast`); then the greater name, then the greater
+  /// full description, which is a total order over the values that build the
+  /// tree. Documents pass their `modified` and title. Tags, correspondents
+  /// and document types carry no modified date, so for them the greater name
+  /// wins.
+  static func isPreferred<T>(
+    _ candidate: T, over kept: T, modified: KeyPath<T, Date?>? = nil,
+    name: KeyPath<T, String>
+  ) -> Bool {
+    if let modified {
+      let candidateModified = candidate[keyPath: modified] ?? .distantPast
+      let keptModified = kept[keyPath: modified] ?? .distantPast
+      if candidateModified != keptModified { return candidateModified > keptModified }
+    }
+    let (candidateName, keptName) = (candidate[keyPath: name], kept[keyPath: name])
+    if candidateName != keptName { return candidateName > keptName }
     return String(describing: candidate) > String(describing: kept)
+  }
+
+  /// Which of two copies of one document id to keep (``isPreferred(_:over:modified:name:)``
+  /// with the modified date and the title).
+  static func isPreferred(_ candidate: Document, over kept: Document) -> Bool {
+    isPreferred(candidate, over: kept, modified: \.modified, name: \.title)
+  }
+
+  /// Elements keyed by id. A repeated id keeps the copy
+  /// ``isPreferred(_:over:modified:name:)`` picks with no modified date: the
+  /// greater name, then the greater full description.
+  static func byID<Element: Identifiable>(
+    _ elements: [Element], name: KeyPath<Element, String>
+  ) -> [Element.ID: Element] {
+    var result: [Element.ID: Element] = [:]
+    for element in elements {
+      if let kept = result[element.id], !isPreferred(element, over: kept, name: name) {
+        continue
+      }
+      result[element.id] = element
+    }
+    return result
   }
 
   /// The year of a document's `created` date, independent of the current
   /// time zone.
   ///
+  /// Exact only for a value that is a local midnight, as a date-only field
+  /// decoded by `DateOnlyCodable` is; for any other instant it is the year of
+  /// that instant shifted by 13.5 hours.
+  ///
   /// `created` is date-only on the server. `DateOnlyCodable` decodes it as
   /// midnight in the time zone current at decode time, and the cache keeps the
   /// absolute `Date`, so reading it with a later zone can land on the
   /// previous or next day (and so the previous or next year on 1 January or
-  /// 31 December). Rounding to the nearest UTC midnight recovers the calendar
-  /// day for any decode-time offset from UTC-11:59 to UTC+12:00 (half a day
-  /// rounds up). Offsets beyond that (UTC-12:00, Chatham UTC+12:45, and
-  /// UTC+13:00 and UTC+14:00, as in Tonga, Samoa, Kiribati and New Zealand
-  /// summer time) round to the neighbouring day.
+  /// 31 December).
+  ///
+  /// A local midnight at offset `z` is the UTC midnight of the same calendar
+  /// day minus `z`. Adding 13.5 hours and taking the UTC day recovers that day
+  /// for every offset from just above UTC-10:30 up to UTC+13:30: that is every
+  /// populated zone from Hawaii (UTC-10) and the Marquesas (UTC-9:30) to
+  /// Samoa, Tonga and New Zealand summer time (UTC+13). The zones it misses
+  /// are UTC-12 and UTC-11 (Baker Island, American Samoa, Niue), Chatham
+  /// summer time (UTC+13:45) and Kiritimati (UTC+14). UTC-10 and UTC+14 cannot
+  /// both be covered: midnight on 1 January in Hawaii is the same instant as
+  /// midnight on 2 January in Kiritimati, so one rule must give one answer
+  /// for both; this one keeps Hawaii.
   public static func createdYear(_ created: Date) -> Int {
+    let shift: TimeInterval = 13.5 * 3600
     let day: TimeInterval = 86_400
-    let days = (created.timeIntervalSince1970 / day + 0.5).rounded(.down)
+    let days = ((created.timeIntervalSince1970 + shift) / day).rounded(.down)
     let midnight = Date(timeIntervalSince1970: days * day)
     return utcCalendar.component(.year, from: midnight)
   }
@@ -258,12 +303,10 @@ extension LibraryTree {
     ) {
       self.settings = settings
       self.labels = labels
-      tagsByID = Dictionary(tags.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      tagsByID = LibraryTree.byID(tags, name: \.name)
       tagParents = Builder.effectiveTagParents(tagsByID)
-      correspondentsByID = Dictionary(
-        correspondents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-      documentTypesByID = Dictionary(
-        documentTypes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      correspondentsByID = LibraryTree.byID(correspondents, name: \.name)
+      documentTypesByID = LibraryTree.byID(documentTypes, name: \.name)
 
       for browse in settings.browseFolders {
         let label: String =
@@ -358,7 +401,7 @@ extension LibraryTree {
         let id = document.correspondent
         let folder = ItemIdentifier.folder(.correspondent(id))
         addFolder(
-          folder, parent: .root, disambiguator: key(id)
+          folder, parent: .root, disambiguator: FolderKey.token(for: id)
         ) { $0.correspondentName(id) }
         return folder
 
@@ -366,7 +409,7 @@ extension LibraryTree {
         let id = document.documentType
         let folder = ItemIdentifier.folder(.documentType(id))
         addFolder(
-          folder, parent: .root, disambiguator: key(id)
+          folder, parent: .root, disambiguator: FolderKey.token(for: id)
         ) { $0.documentTypeName(id) }
         return folder
 
@@ -380,7 +423,9 @@ extension LibraryTree {
         let id = document.correspondent
         let year = LibraryTree.createdYear(document.created)
         let outer = ItemIdentifier.folder(.correspondentYear(correspondent: id, year: nil))
-        addFolder(outer, parent: .root, disambiguator: key(id)) { $0.correspondentName(id) }
+        addFolder(outer, parent: .root, disambiguator: FolderKey.token(for: id)) {
+          $0.correspondentName(id)
+        }
         let inner = ItemIdentifier.folder(.correspondentYear(correspondent: id, year: year))
         addFolder(inner, parent: outer, disambiguator: String(year)) { _ in String(year) }
         return inner
@@ -420,19 +465,17 @@ extension LibraryTree {
         disambiguator: disambiguator, kind: .folder, version: "")
     }
 
-    private func key(_ id: UInt?) -> String {
-      id.map { String($0) } ?? "none"
-    }
-
     // The *Name functions return sanitized stems, each sanitized once.
 
     private func correspondentName(_ id: UInt?) -> String {
-      guard let id else { return FileNaming.sanitize(labels.noCorrespondent) ?? "none" }
+      guard let id else {
+        return FileNaming.sanitize(labels.noCorrespondent) ?? FolderKey.noneToken
+      }
       return named(correspondentsByID[id]?.name, fallback: labels.unknownCorrespondent, id)
     }
 
     private func documentTypeName(_ id: UInt?) -> String {
-      guard let id else { return FileNaming.sanitize(labels.noDocumentType) ?? "none" }
+      guard let id else { return FileNaming.sanitize(labels.noDocumentType) ?? FolderKey.noneToken }
       return named(documentTypesByID[id]?.name, fallback: labels.unknownDocumentType, id)
     }
 
@@ -464,7 +507,7 @@ extension LibraryTree {
           children.map {
             FileNaming.Entry(
               stem: $0.stem, fileExtension: $0.fileExtension, disambiguator: $0.disambiguator,
-              uniqueKey: $0.identifier.rawValue, keepsName: $0.keepsName)
+              uniqueKey: $0.identifier.stringValue, keepsName: $0.keepsName)
           })
         var resolved: [TreeItem] = []
         for (node, name) in zip(children, names) {
@@ -474,8 +517,10 @@ extension LibraryTree {
           items[node.identifier] = item
           resolved.append(item)
         }
-        resolved.sort(by: LibraryTree.displayOrder)
-        childIDs[parent] = resolved.map(\.identifier)
+        // Each identifier string is built once, for the tie-breaker.
+        let keyed = resolved.map { (item: $0, key: $0.identifier.stringValue) }
+          .sorted { LibraryTree.displayOrder($0.item, $0.key, $1.item, $1.key) }
+        childIDs[parent] = keyed.map(\.item.identifier)
       }
       return (items, childIDs)
     }
@@ -483,12 +528,16 @@ extension LibraryTree {
 
   /// Folders first, then documents; by name in Finder order; ties by
   /// identifier.
-  static func displayOrder(_ lhs: TreeItem, _ rhs: TreeItem) -> Bool {
+  /// `lhsKey` and `rhsKey` are the items' identifier strings, precomputed by
+  /// the caller.
+  static func displayOrder(
+    _ lhs: TreeItem, _ lhsKey: String, _ rhs: TreeItem, _ rhsKey: String
+  ) -> Bool {
     if lhs.isFolder != rhs.isFolder { return lhs.isFolder }
     switch lhs.name.localizedStandardCompare(rhs.name) {
     case .orderedAscending: return true
     case .orderedDescending: return false
-    case .orderedSame: return lhs.identifier.rawValue < rhs.identifier.rawValue
+    case .orderedSame: return lhsKey < rhsKey
     }
   }
 }

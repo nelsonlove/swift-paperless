@@ -264,6 +264,32 @@ struct FileNamingTests {
     #expect(FileNaming.stableHash("doc:1") == "30540a0f")
   }
 
+  @Test("Each comparison key is computed once per name, plus once per name change")
+  func keyComputedOncePerName() {
+    final class Counter: @unchecked Sendable { var calls = 0 }
+    let counter = Counter()
+    // 200 plain names and 100 pairs that collide once.
+    var entries = (0..<200).map {
+      FileNaming.Entry(stem: "Unique \($0)", fileExtension: "pdf", disambiguator: "\($0)")
+    }
+    for pair in 0..<100 {
+      for member in 0..<2 {
+        entries.append(
+          FileNaming.Entry(
+            stem: "Pair \(pair)", fileExtension: "pdf", disambiguator: "\(1000 + pair * 2 + member)"
+          ))
+      }
+    }
+    let names = FileNaming.resolveCollisions(entries) { name in
+      counter.calls += 1
+      return FileNaming.comparisonKey(name)
+    }
+    #expect(names == FileNaming.resolveCollisions(entries))
+    #expect(Set(names).count == entries.count)
+    // 400 initial keys and 200 renamed entries.
+    #expect(counter.calls == 600)
+  }
+
   @Test("An entry that keeps its name wins; the others take the suffix")
   func keepsName() {
     let entries = [

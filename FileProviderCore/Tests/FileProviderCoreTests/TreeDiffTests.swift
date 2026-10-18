@@ -124,6 +124,190 @@ struct TreeDiffTests {
     expectFoldersFirst(result, Fixtures.tree(FileProviderSettings(layout: .year)))
   }
 
+  /// Replays changes the way the File Provider system applies them: an
+  /// update sets the item's entry; a deletion removes the item and every item
+  /// whose parent chain, at that moment, runs through it.
+  private func replay(_ changes: [TreeDiff.Change], on old: TreeSnapshot, new: TreeSnapshot)
+    -> TreeSnapshot
+  {
+    var state = old
+    for change in changes {
+      switch change {
+      case .update(let id):
+        state.entries[id] = new.entries[id]
+      case .delete(let id):
+        let doomed = state.entries.keys.filter { candidate in
+          var current = candidate
+          var steps = 0
+          while steps < 64 {
+            if current == id { return true }
+            guard let parent = state.entries[current]?.parent else { return false }
+            current = parent
+            steps += 1
+          }
+          return false
+        }
+        for item in doomed { state.entries[item] = nil }
+      }
+    }
+    return state
+  }
+
+  @Test("Updates before deletions keep a document moved out of a folder that empties")
+  func moveOutOfEmptiedFolder() {
+    // City Library (correspondent 3) holds only document 12; it moves to Acme.
+    var changed = Fixtures.documents
+    changed[2].correspondent = 1
+    let flat = FileProviderSettings(layout: .correspondent, browseFolders: [])
+    let old = Fixtures.tree(flat).snapshot()
+    let new = Fixtures.tree(flat, documents: changed).snapshot()
+    let diff = TreeDiff(from: old, to: new)
+    #expect(diff.changes.contains(.update(.document(12))))
+    #expect(diff.changes.contains(.delete(.folder(.correspondent(3)))))
+
+    // The folder held a survivor, so its deletion comes after the move.
+    let move = diff.changes.firstIndex(of: .update(.document(12)))!
+    let removal = diff.changes.firstIndex(of: .delete(.folder(.correspondent(3))))!
+    #expect(move < removal)
+
+    // Applies changes one at a time and reports whether document 12 was ever
+    // missing on the way, which for the system means it was deleted (its
+    // file, Recents entry and bookmarks gone) rather than moved.
+    func walk(_ changes: [TreeDiff.Change]) -> (final: TreeSnapshot, everLost: Bool) {
+      var state = old
+      var everLost = false
+      for change in changes {
+        state = replay([change], on: state, new: new)
+        if state.entries[.document(12)] == nil { everLost = true }
+      }
+      return (state, everLost)
+    }
+
+    // The documented order (the API's only order): the document is moved and
+    // never lost, and the result is the new tree.
+    let documented = walk(diff.changes)
+    #expect(!documented.everLost)
+    #expect(documented.final.entries[.document(12)]?.parent == .folder(.correspondent(1)))
+    #expect(documented.final == new)
+
+    // The wrong order, deletions first, cannot come out of the API. Built by
+    // hand, it deletes the document together with its old folder; the update
+    // after that can only bring it back as a new item.
+    let deletionsFirst =
+      diff.changes.filter { if case .delete = $0 { true } else { false } }
+      + diff.changes.filter { if case .update = $0 { true } else { false } }
+    let wrong = walk(deletionsFirst)
+    #expect(wrong.everLost)
+  }
+
+  /// Identifiers of items that share a name (case-insensitively after NFC)
+  /// with a sibling in the given state.
+  private func siblingClashes(_ state: TreeSnapshot) -> Set<ItemIdentifier> {
+    var groups: [String: [ItemIdentifier]] = [:]
+    for (id, entry) in state.entries {
+      groups["\(entry.parent.stringValue)/\(FileNaming.comparisonKey(entry.name))", default: []]
+        .append(id)
+    }
+    return Set(groups.values.filter { $0.count > 1 }.flatMap { $0 })
+  }
+
+  @Test("A sibling renamed to a deleted folder's name never shares it during the replay")
+  func renameToDeletedName() {
+    // Acme Utilities' documents are deleted, and Northwind Bank is renamed to
+    // "Acme Utilities" in the same diff.
+    let remaining = Fixtures.documents.filter { $0.correspondent != 1 }
+    var correspondents = Fixtures.correspondents
+    correspondents[1].name = "Acme Utilities"
+    let old = Fixtures.tree().snapshot()
+    let new = LibraryTree(
+      documents: remaining, tags: Fixtures.tags, correspondents: correspondents,
+      documentTypes: Fixtures.documentTypes
+    ).snapshot()
+    let diff = TreeDiff(from: old, to: new)
+    #expect(diff.changes.contains(.delete(.folder(.correspondent(1)))))
+    #expect(diff.changes.contains(.update(.folder(.correspondent(2)))))
+    #expect(new.entries[.folder(.correspondent(2))]?.name == "Acme Utilities")
+
+    // The documented order: no step ever has two siblings with one name, and
+    // it ends in the new tree.
+    var state = old
+    #expect(siblingClashes(state).isEmpty)
+    for change in diff.changes {
+      state = replay([change], on: state, new: new)
+      #expect(siblingClashes(state).isEmpty, "clash after \(change)")
+    }
+    #expect(state == new)
+
+    // All updates before all deletions would have a step with a clash.
+    let updatesFirst =
+      diff.changes.filter { if case .update = $0 { true } else { false } }
+      + diff.changes.filter { if case .delete = $0 { true } else { false } }
+    var naive = old
+    var clashed = false
+    for change in updatesFirst {
+      naive = replay([change], on: naive, new: new)
+      if !siblingClashes(naive).isEmpty { clashed = true }
+    }
+    #expect(clashed)
+  }
+
+  @Test("The diff has three runs: safe deletions, updates, other deletions")
+  func runs() {
+    // Acme's documents are deleted (a safe deletion of its folders), and
+    // City Library's only document moves to Northwind (an unsafe deletion).
+    var changed = Fixtures.documents.filter { $0.correspondent != 1 }
+    changed[changed.firstIndex { $0.id == 12 }!].correspondent = 2
+    let diff = TreeDiff(
+      from: Fixtures.tree().snapshot(), to: Fixtures.tree(documents: changed).snapshot())
+    #expect(diff.runs.count == 3)
+    #expect(diff.changes == diff.runs.flatMap { $0 })
+
+    let isDelete: (TreeDiff.Change) -> Bool = {
+      if case .delete = $0 { true } else { false }
+    }
+    #expect(diff.runs[0].allSatisfy(isDelete))
+    #expect(diff.runs[1].allSatisfy { !isDelete($0) })
+    #expect(diff.runs[2].allSatisfy(isDelete))
+    #expect(diff.runs[0].contains(.delete(.folder(.correspondent(1)))))
+    #expect(diff.runs[0].contains(.delete(.document(10))))
+    #expect(diff.runs[1].contains(.update(.document(12))))
+    #expect(diff.runs[2].contains(.delete(.folder(.correspondent(3)))))
+
+    // No change: three empty runs.
+    let none = TreeDiff(from: Fixtures.tree().snapshot(), to: Fixtures.tree().snapshot())
+    #expect(none.runs == [[], [], []])
+    #expect(none.isEmpty)
+  }
+
+  @Test("Documented limit: an unsafe deletion can briefly share a name with a new sibling")
+  func unsafeDeletionNameOverlap() {
+    // Layout switch from correspondent to year with a correspondent named
+    // "2026": the year folder "2026" arrives while the correspondent folder
+    // "2026" still holds documents moving out.
+    var correspondents = Fixtures.correspondents
+    correspondents[0].name = "2026"
+    let settingsBefore = FileProviderSettings(layout: .correspondent, browseFolders: [])
+    let settingsAfter = FileProviderSettings(layout: .year, browseFolders: [])
+    func tree(_ settings: FileProviderSettings) -> LibraryTree {
+      LibraryTree(
+        documents: Fixtures.documents, tags: [], correspondents: correspondents,
+        documentTypes: [], settings: settings)
+    }
+    let old = tree(settingsBefore).snapshot()
+    let new = tree(settingsAfter).snapshot()
+    let diff = TreeDiff(from: old, to: new)
+    #expect(diff.runs[2].contains(.delete(.folder(.correspondent(1)))))
+
+    var state = old
+    var overlapped = false
+    for change in diff.changes {
+      state = replay([change], on: state, new: new)
+      if !siblingClashes(state).isEmpty { overlapped = true }
+    }
+    #expect(overlapped)
+    #expect(state == new)
+  }
+
   @Test("Snapshots survive a JSON round trip")
   func snapshotCodable() throws {
     let snapshot = Fixtures.tree().snapshot()

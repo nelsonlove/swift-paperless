@@ -21,6 +21,23 @@ public enum DomainReconcile {
     }
   }
 
+  /// A configured server, as the domain sync sees it.
+  public struct Server: Equatable, Hashable, Sendable {
+    /// The domain identifier: the server's UUID string.
+    public var identifier: String
+    /// The name the server is shown under (its friendly name or host).
+    public var displayName: String
+    /// The account's user name, used to tell apart servers that share a
+    /// display name.
+    public var userName: String?
+
+    public init(identifier: String, displayName: String, userName: String? = nil) {
+      self.identifier = identifier
+      self.displayName = displayName
+      self.userName = userName
+    }
+  }
+
   public struct Result: Equatable, Sendable {
     /// Servers with no domain yet.
     public var add: [Domain]
@@ -44,14 +61,20 @@ public enum DomainReconcile {
   }
 
   /// - Parameters:
-  ///   - servers: Server identifier to the display name its domain should have.
+  ///   - servers: The configured servers. Their domain names come from
+  ///     ``displayNames(for:existing:)``.
   ///   - domains: Existing domain identifier to its current display name.
   /// - Returns: Each list sorted by identifier. `remove` carries the existing
   ///   domain's name; `renameInPlace` carries the new name. A domain is only
-  ///   in `remove` when its server is gone, never because of a rename.
-  public static func reconcile(servers: [String: String], domains: [String: String]) -> Result {
+  ///   in `remove` when its server is gone. It is in `renameInPlace` only
+  ///   when its own server's display name changed, or when it shares its
+  ///   current name with an existing domain of a server with a smaller
+  ///   identifier. Adding or removing another server never renames an
+  ///   existing domain, and neither does a change of user name alone.
+  public static func reconcile(servers: [Server], domains: [String: String]) -> Result {
+    let names = displayNames(for: servers, existing: domains)
     var result = Result()
-    for (identifier, name) in servers {
+    for (identifier, name) in names {
       if let existing = domains[identifier] {
         if existing != name {
           result.renameInPlace.append(Domain(identifier: identifier, displayName: name))
@@ -60,12 +83,90 @@ public enum DomainReconcile {
         result.add.append(Domain(identifier: identifier, displayName: name))
       }
     }
-    for (identifier, name) in domains where servers[identifier] == nil {
+    for (identifier, name) in domains where names[identifier] == nil {
       result.remove.append(Domain(identifier: identifier, displayName: name))
     }
     result.add.sort { $0.identifier < $1.identifier }
     result.remove.sort { $0.identifier < $1.identifier }
     result.renameInPlace.sort { $0.identifier < $1.identifier }
     return result
+  }
+
+  /// The domain name for each server, always distinct across servers
+  /// (compared case-insensitively after NFC), so Files never lists two
+  /// locations with one name.
+  ///
+  /// A server whose existing domain name is its display name, or its display
+  /// name with any parenthesized suffix (so a change of user name alone
+  /// keeps it), keeps that name, so adding or removing another server never
+  /// renames it. Kept names are checked against each other in identifier
+  /// order: of two existing domains with one name (case-insensitively after
+  /// NFC), the server with the smaller identifier keeps it and the other is
+  /// named like a new one. A consequence of accepting any suffix: a display
+  /// name change that only removes a trailing parenthesized part (from
+  /// "Office (new)" to "Office") is not seen as a rename. Every other server
+  /// (a new one, one whose display name changed, or one that lost a clash)
+  /// is named in identifier order with the first free name of: its display name, when no other server shares that display
+  /// name; ` (<user name>)` appended; ` (<first 8 characters of the
+  /// identifier>)` appended; ` (<identifier>)` appended; then
+  /// ` (<identifier> <n>)` for n = 2, 3, and so on. The counter makes every
+  /// candidate different, so a free name is always found.
+  public static func displayNames(for servers: [Server], existing: [String: String] = [:])
+    -> [String: String]
+  {
+    let unique = Dictionary(
+      servers.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first }
+    ).values.sorted { $0.identifier < $1.identifier }
+    let sharedDisplayNames = Set(
+      Dictionary(grouping: unique, by: { FileNaming.comparisonKey($0.displayName) })
+        .filter { $0.value.count > 1 }.keys)
+
+    var names: [String: String] = [:]
+    var claimed = Set<String>()
+    var pending: [Server] = []
+    for server in unique {
+      if let current = existing[server.identifier], isDerived(current, from: server),
+        claimed.insert(FileNaming.comparisonKey(current)).inserted
+      {
+        names[server.identifier] = current
+      } else {
+        pending.append(server)
+      }
+    }
+
+    for server in pending {
+      let base = server.displayName
+      var candidates: [String] = []
+      if !sharedDisplayNames.contains(FileNaming.comparisonKey(base)) {
+        candidates.append(base)
+      }
+      if let user = server.userName, !user.isEmpty {
+        candidates.append("\(base) (\(user))")
+      }
+      candidates.append("\(base) (\(server.identifier.prefix(8)))")
+      candidates.append("\(base) (\(server.identifier))")
+
+      var name = candidates.first { !claimed.contains(FileNaming.comparisonKey($0)) }
+      var counter = 2
+      while name == nil {
+        let candidate = "\(base) (\(server.identifier) \(counter))"
+        if !claimed.contains(FileNaming.comparisonKey(candidate)) { name = candidate }
+        counter += 1
+      }
+      names[server.identifier] = name!
+      claimed.insert(FileNaming.comparisonKey(name!))
+    }
+    return names
+  }
+
+  /// Whether `name` is the server's display name, or the display name
+  /// followed by ` (<anything>)`: the shape of every name
+  /// ``displayNames(for:existing:)`` derives, whatever the user name was when
+  /// it was made.
+  static func isDerived(_ name: String, from server: Server) -> Bool {
+    let base = server.displayName
+    if name == base { return true }
+    let prefix = "\(base) ("
+    return name.count > prefix.count + 1 && name.hasPrefix(prefix) && name.hasSuffix(")")
   }
 }

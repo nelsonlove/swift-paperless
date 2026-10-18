@@ -96,9 +96,9 @@ struct LibraryTreeTests {
 
   /// Midnight on a day in a given UTC offset, as `DateOnlyCodable` would
   /// decode it in that zone.
-  private func localMidnight(_ year: Int, _ month: Int, _ day: Int, offsetHours: Int) -> Date {
+  private func localMidnight(_ year: Int, _ month: Int, _ day: Int, offsetHours: Double) -> Date {
     var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = TimeZone(secondsFromGMT: offsetHours * 3600)!
+    calendar.timeZone = TimeZone(secondsFromGMT: Int(offsetHours * 3600))!
     return calendar.date(from: DateComponents(year: year, month: month, day: day))!
   }
 
@@ -112,10 +112,27 @@ struct LibraryTreeTests {
     #expect(minusFive.component(.year, from: decodedAtPlusOne) == 2025)
     #expect(LibraryTree.createdYear(decodedAtPlusOne) == 2026)
 
-    for offset in [-11, -5, 0, 1, 9, 12] {
+    // Hawaii (-10), the Marquesas (-9:30), New York (-5), UTC, Paris (+1),
+    // Tokyo (+9), Auckland standard (+12), Chatham (+12:45), and Auckland
+    // summer, Samoa and Tonga (+13).
+    for offset in [-10, -9.5, -5, 0, 1, 9, 12, 12.75, 13] {
       #expect(LibraryTree.createdYear(localMidnight(2026, 1, 1, offsetHours: offset)) == 2026)
       #expect(LibraryTree.createdYear(localMidnight(2025, 12, 31, offsetHours: offset)) == 2025)
     }
+
+    // Outside the window the year is knowingly wrong on the boundary days:
+    // 1 January decoded at UTC-11 (American Samoa, Niue) reads as 2 January,
+    // so 31 December reads as the next year.
+    #expect(LibraryTree.createdYear(localMidnight(2025, 12, 31, offsetHours: -11)) == 2026)
+    #expect(LibraryTree.createdYear(localMidnight(2026, 1, 1, offsetHours: -11)) == 2026)
+
+    // Kiritimati (+14) is the one populated zone outside the window. It
+    // cannot be inside it together with Hawaii: their midnights coincide one
+    // calendar day apart, so a rule on the instant must pick one of them.
+    let hawaiiNewYear = localMidnight(2026, 1, 1, offsetHours: -10)
+    let kiritimatiNextDay = localMidnight(2026, 1, 2, offsetHours: 14)
+    #expect(hawaiiNewYear == kiritimatiNextDay)
+    #expect(LibraryTree.createdYear(localMidnight(2026, 12, 31, offsetHours: -10)) == 2026)
 
     var document = Fixtures.document(1, "New year letter")
     document.created = decodedAtPlusOne
@@ -278,6 +295,100 @@ struct LibraryTreeTests {
       documentTypes: [], settings: settings(.correspondent))
     #expect(tree.names(.folder(.correspondent(1))) == ["bill (#20).pdf", "Bill (#21).pdf"])
     #expect(tree.names(.root) == ["Acme Utilities (#1)", "Acme Utilities (#5)"])
+  }
+
+  @Test("Duplicate tag, correspondent and type ids are resolved the same in any order")
+  func duplicateElements() {
+    let documents = [Fixtures.document(1, "Bill", correspondent: 1, type: 1, tags: [1])]
+    let tagsA = [Fixtures.tag(1, "alpha"), Fixtures.tag(1, "beta")]
+    let correspondentsA = [
+      Fixtures.correspondent(1, "Acme Utilities"), Fixtures.correspondent(1, "Northwind Bank"),
+    ]
+    let typesA = [Fixtures.documentType(1, "Invoice"), Fixtures.documentType(1, "Letter")]
+    // Same name, other fields differ: the full description breaks the tie.
+    var slugged = Fixtures.correspondent(2, "City Library")
+    slugged.slug = "zzz"
+    let tieA = [Fixtures.correspondent(2, "City Library"), slugged]
+
+    func build(_ reverse: Bool) -> LibraryTree {
+      func order<T>(_ list: [T]) -> [T] { reverse ? list.reversed() : list }
+      return LibraryTree(
+        documents: documents + [Fixtures.document(2, "Card", correspondent: 2)],
+        tags: order(tagsA), correspondents: order(correspondentsA + tieA),
+        documentTypes: order(typesA))
+    }
+    let forward = build(false)
+    let backward = build(true)
+    #expect(forward.snapshot() == backward.snapshot())
+    #expect(forward.item(for: .folder(.correspondent(1)))?.name == "Northwind Bank")
+    #expect(forward.item(for: .browseFolder(.tag, id: 1))?.name == "beta")
+    #expect(forward.item(for: .browseFolder(.documentType, id: 1))?.name == "Letter")
+    let tie = LibraryTree.byID(tieA, name: \.name)
+    #expect(tie == LibraryTree.byID(tieA.reversed(), name: \.name))
+  }
+
+  @Test("The none token is the same in identifiers, suffixes and fallback names")
+  func noneTokenShared() {
+    #expect(
+      ItemIdentifier.folder(.correspondent(nil)).stringValue
+        == "dir:correspondent:\(FolderKey.noneToken)")
+    #expect(
+      ItemIdentifier(stringValue: "dir:documentType:\(FolderKey.noneToken)")
+        == .folder(.documentType(nil)))
+
+    // A correspondent named like the "No correspondent" folder: both take a
+    // suffix, the folder's built from the none token.
+    var correspondents = Fixtures.correspondents
+    correspondents.append(Fixtures.correspondent(5, "No correspondent"))
+    let documents = [
+      Fixtures.document(1, "One", correspondent: 5), Fixtures.document(2, "Two"),
+    ]
+    let tree = LibraryTree(
+      documents: documents, tags: [], correspondents: correspondents, documentTypes: [],
+      settings: FileProviderSettings(layout: .correspondent, browseFolders: []))
+    #expect(
+      tree.item(for: .folder(.correspondent(nil)))?.name
+        == "No correspondent (#\(FolderKey.noneToken))")
+    #expect(tree.item(for: .folder(.correspondent(5)))?.name == "No correspondent (#5)")
+
+    // A label that sanitizes to nothing falls back to the token too.
+    let blank = LibraryTree(
+      documents: [Fixtures.document(2, "Two")], tags: [], correspondents: [], documentTypes: [],
+      settings: FileProviderSettings(layout: .correspondent, browseFolders: []),
+      labels: TreeLabels(noCorrespondent: "..."))
+    #expect(blank.item(for: .folder(.correspondent(nil)))?.name == FolderKey.noneToken)
+  }
+
+  @Test("Display order breaks a name tie by the precomputed identifier string")
+  func displayOrderTie() {
+    let a = TreeItem(
+      identifier: .document(2), parent: .root, name: "Same.pdf", kind: .document, version: "")
+    let b = TreeItem(
+      identifier: .document(10), parent: .root, name: "Same.pdf", kind: .document, version: "")
+    let folder = TreeItem(
+      identifier: .folder(.year(2026)), parent: .root, name: "Zzz", kind: .folder, version: "")
+    // "doc:10" < "doc:2" as strings.
+    #expect(LibraryTree.displayOrder(b, "doc:10", a, "doc:2"))
+    #expect(!LibraryTree.displayOrder(a, "doc:2", b, "doc:10"))
+    #expect(LibraryTree.displayOrder(folder, "dir:year:2026", a, "doc:2"))
+  }
+
+  @Test("One preference rule: modified date first for documents, name first for elements")
+  func sharedPreference() {
+    let older = Fixtures.document(1, "Zulu", modified: Fixtures.date(2026, 1, 1))
+    let newer = Fixtures.document(1, "Alpha", modified: Fixtures.date(2026, 2, 1))
+    #expect(LibraryTree.isPreferred(newer, over: older))
+    // A copy with a modified date beats one without, whatever the titles.
+    var undated = Fixtures.document(1, "Zzz")
+    undated.modified = nil
+    #expect(LibraryTree.isPreferred(older, over: undated))
+    #expect(!LibraryTree.isPreferred(undated, over: older))
+    // Without the modified step the same two compare by name.
+    #expect(LibraryTree.isPreferred(older, over: newer, name: \.title))
+    let alpha = Fixtures.tag(1, "alpha")
+    let beta = Fixtures.tag(1, "beta")
+    #expect(LibraryTree.isPreferred(beta, over: alpha, name: \.name))
+    #expect(LibraryTree.byID([beta, alpha], name: \.name)[1]?.name == "beta")
   }
 
   @Test("document(for:) is nil for an identifier not in the tree")
