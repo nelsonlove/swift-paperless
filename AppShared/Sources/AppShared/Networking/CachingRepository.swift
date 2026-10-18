@@ -263,6 +263,10 @@ public protocol CachingBackend: AnyObject, Sendable {
   /// behind it, naming the pass that repairs the cache. The mutation itself
   /// still succeeds. The owning `ServerSession` installs this.
   var onCacheWriteLost: (@MainActor (CacheHeal) -> Void)? { get set }
+
+  /// Called after a document edit or delete was written through, so the File
+  /// Provider can pick it up. The owning `ServerSession` installs this.
+  var onDocumentsChanged: (@MainActor () -> Void)? { get set }
 }
 
 /// The sync pass that brings the cache up to a server-accepted change whose
@@ -319,6 +323,8 @@ public final class CachingRepository<Wrapped: Repository>: Repository, CachingBa
   public let serverID: UUID
 
   public var onCacheWriteLost: (@MainActor (CacheHeal) -> Void)?
+
+  public var onDocumentsChanged: (@MainActor () -> Void)?
 
   /// The in-flight writer of each `QueryKey`'s `query_order` — a fill (page 1
   /// included, not only the background continuation) or the membership sweep's
@@ -1203,6 +1209,9 @@ public final class CachingRepository<Wrapped: Repository>: Repository, CachingBa
       try await database.upsertDocument(updated, serverID: serverID)
       try await database.markQueriesOrderStale(containing: updated.id, serverID: serverID)
     }
+    // After the cache write, so a listener that reads the cache sees the edit;
+    // also when the write was lost, since the server has the change.
+    onDocumentsChanged?()
     return updated
   }
 
@@ -1214,6 +1223,7 @@ public final class CachingRepository<Wrapped: Repository>: Repository, CachingBa
       [database, serverID, id = document.id] in
       try await database.deleteDocuments(serverID: serverID, removedIDs: [id])
     }
+    onDocumentsChanged?()
   }
 
   public func create(document: ProtoDocument, file: URL, filename: String) async throws {

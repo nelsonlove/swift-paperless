@@ -43,6 +43,15 @@ public final class ServerSessionRegistry {
   /// database.
   @ObservationIgnored public var onServersRemoved: (@MainActor (Set<UUID>) -> Void)?
 
+  /// Installed on every session as ``ServerSession/onLibraryChanged``.
+  @ObservationIgnored public var onLibraryChanged: (@MainActor (UUID) -> Void)? {
+    didSet {
+      for session in sessions.values {
+        session.onLibraryChanged = onLibraryChanged
+      }
+    }
+  }
+
   /// One session per known server. Observable so a screen can show every
   /// server's state, not just the active one's.
   public private(set) var sessions: [UUID: ServerSession] = [:]
@@ -134,6 +143,7 @@ public final class ServerSessionRegistry {
     let session = ServerSession(
       serverID: id, database: database, mode: mode, suspension: suspension,
       contentReclaimer: contentReclaimer)
+    session.onLibraryChanged = onLibraryChanged
     sessions[id] = session
     return session
   }

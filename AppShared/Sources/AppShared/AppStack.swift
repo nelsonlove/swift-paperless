@@ -57,6 +57,11 @@ public final class AppStack {
       database: database, manager: connectionManager, suspension: suspension,
       contentReclaimer: contentReclaimer)
     self.sessionRegistry = sessionRegistry
+    #if canImport(FileProvider)
+      // Every process that writes the cache (the app, the App Intents and the
+      // Share Extension) tells the File Provider about it.
+      sessionRegistry.onLibraryChanged = { FileProviderSignaler.shared.signal(serverID: $0) }
+    #endif
     suspension.onExpire = { [weak sessionRegistry] in sessionRegistry?.cancelAllWork() }
     // The rows went with the server; its files are only found by the walk.
     sessionRegistry.onServersRemoved = { _ in

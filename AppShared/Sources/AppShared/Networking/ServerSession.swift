@@ -64,6 +64,12 @@ public final class ServerSession {
 
   public let serverID: UUID
 
+  /// Called with ``serverID`` when this server's cached library may have
+  /// changed: at the end of a sync pass, after a reconcile that refreshed
+  /// something, and after a document edit or delete was written through. The
+  /// registry installs the File Provider signal here; tests install their own.
+  @ObservationIgnored public var onLibraryChanged: (@MainActor (UUID) -> Void)?
+
   @ObservationIgnored private let source: Source
 
   /// Every sync step runs as background work here; see ``asBackgroundWork(_:)``.
@@ -317,6 +323,11 @@ public final class ServerSession {
   /// Route the repository's lost cache writes to this session's heal.
   private func adopt(_ repository: any Repository & CachingBackend) {
     repository.onCacheWriteLost = { [weak self] in self?.heal($0) }
+    repository.onDocumentsChanged = { [weak self] in self?.libraryChanged() }
+  }
+
+  private func libraryChanged() {
+    onLibraryChanged?(serverID)
   }
 
   // MARK: - Repository access
@@ -621,6 +632,11 @@ public final class ServerSession {
     await recorder.end(
       row, result.cancelled ? .cancelled : result.failed ? .failed : .ok,
       message: firstFailure, succeeded: result.succeeded, failed: failedSweeps)
+    // The sweeps report no row counts, so any pass in which a sweep finished
+    // counts as a change; the File Provider's own diff finds what moved.
+    if result.succeeded > 0, !result.cancelled {
+      libraryChanged()
+    }
     return result
   }
 
@@ -847,6 +863,9 @@ public final class ServerSession {
         }
       }
 
+      // Both ends of a pass that ran its phases signal: a partial pass still
+      // refreshed something.
+      defer { libraryChanged() }
       guard reconcile.isClean, filled else {
         Logger.sync.info(
           "Server \(stored.logLabel, privacy: .public) partially synced")

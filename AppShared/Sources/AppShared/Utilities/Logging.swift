@@ -19,6 +19,7 @@ extension Logger {
   /// `log stream --predicate 'category == "Sync"'` to watch the whole
   /// multi-server sync in isolation.
   public static let sync = Logger(subsystem: subsystem, category: "Sync")
+  public static let fileProvider = Logger(subsystem: subsystem, category: "FileProvider")
   public static let migration = Logger(
     subsystem: subsystem, category: "Migration")
   public static let biometric = Logger(
