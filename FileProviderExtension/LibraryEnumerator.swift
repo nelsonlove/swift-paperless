@@ -8,43 +8,49 @@ import FileProviderCore
 import Foundation
 
 /// Carries a value the SDK hands over as non-Sendable (an observer, a
-/// completion handler) into the main-actor task that answers it. The SDK calls
-/// these from any thread and each is used once, from that one task.
+/// completion handler) into the task that answers it. The SDK calls these
+/// from any thread and each is used once, from that one task.
 struct Handoff<Value>: @unchecked Sendable {
   let value: Value
 }
 
 /// Enumerates a container of the library tree, or the working set.
 ///
-/// Items: the container's children, folders first, or for the working set
-/// every folder and every canonical document, paged with ``ItemPager``. The
+/// Items: the container's children, or for the working set every folder and
+/// every canonical document, paged with ``ItemPager`` by identifier, so a
+/// library reread between pages neither repeats nor skips an item. The
 /// library is reread on the first page of each enumeration.
 ///
 /// Changes: only the working set reports them. Its `enumerateChanges` answers
 /// one ``TreeDiff`` run per call with ``ChangePager`` and finishes the page with
 /// `moreComing` while runs remain, saving the change state after each run, so
 /// a run is never sent twice and each run is applied before the next one (see
-/// ``TreeDiff``). The change state covers every item of the tree, appearances
-/// included: the header says a directory the user enumerated and its children
-/// belong to the working set (NSFileProviderReplicatedExtension.h,
+/// ``TreeDiff``). The pages of one burst diff against one library read. The
+/// change state covers every item of the tree, appearances included: the
+/// header says a directory the user enumerated and its children belong to the
+/// working set (NSFileProviderReplicatedExtension.h,
 /// enumeratorForContainerItemIdentifier). A container enumerator reports no
 /// changes of its own and finishes at the anchor it was given, since every
 /// change reaches the system through the working set; whether the system
 /// accepts that for containers is not checked on a device.
+///
+/// A library that cannot be read fails the call with
+/// NSFileProviderErrorServerUnreachable ("in case the item cannot be fetched
+/// because of the current state of the system / domain", the header's
+/// enumeratorForContainerItemIdentifier "Error cases", line 183 in the iOS
+/// 26.5 SDK), so the system backs off and keeps what it has.
 final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
-  enum Scope {
+  enum Scope: Sendable {
     case container(ItemIdentifier)
     case workingSet
   }
 
-  /// Answered when the stack is the in-memory fallback and no state exists;
-  /// unknown to ``ChangePager``, so it expires once a real database is back.
-  static let fallbackAnchor = NSFileProviderSyncAnchor(Data("fallback".utf8))
+  /// Items per page when the system suggests none.
+  static let defaultPageSize = 200
 
   private let holder: ContextHolder
   private let scope: Scope
-  private var tasks: [Task<Void, Never>] = []
-  private let lock = NSLock()
+  private let tasks = TaskBag()
 
   init(holder: ContextHolder, scope: Scope) {
     self.holder = holder
@@ -52,16 +58,12 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
   }
 
   func invalidate() {
-    lock.withLock {
-      for task in tasks { task.cancel() }
-      tasks.removeAll()
-    }
+    tasks.cancelAll()
   }
 
   private func run(_ body: @escaping @MainActor @Sendable (ExtensionContext) async -> Void) {
     let holder = holder
-    let task = Task { @MainActor in await body(holder.context) }
-    lock.withLock { tasks.append(task) }
+    tasks.run { @MainActor in await body(holder.context) }
   }
 
   // MARK: Items
@@ -71,33 +73,33 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
   ) {
     let observer = Handoff(value: observer)
     let token = page.rawValue
-    let pageSize = observer.value.suggestedPageSize ?? 200
+    let pageSize = observer.value.suggestedPageSize ?? Self.defaultPageSize
     let scope = scope
     run { context in
       do {
-        guard let tree = try await context.tree(refresh: ItemPager.isFirstPage(token)) else {
-          // In-memory fallback: list nothing, delete nothing.
-          observer.value.finishEnumerating(upTo: nil)
-          return
-        }
+        let library = try await context.library(refresh: ItemPager.isFirstPage(token))
         let items: [TreeItem]
         switch scope {
         case .workingSet:
-          items = tree.workingSet
+          items = library.tree.workingSet
         case .container(let identifier):
-          guard let children = tree.children(of: identifier) else {
-            // NSFileProviderEnumerating.h / the replicated header's
-            // enumeratorForContainerItemIdentifier "Error cases": an unknown
-            // container fails with NSFileProviderErrorNoSuchItem.
+          guard let children = library.tree.children(of: identifier) else {
+            // The library was read and has no such container: the header's
+            // enumeratorForContainerItemIdentifier "Error cases" ask for
+            // NSFileProviderErrorNoSuchItem.
             observer.value.finishEnumeratingWithError(NSFileProviderError(.noSuchItem))
             return
           }
           items = children
         }
-        let slice = ItemPager.page(items, token: token, size: pageSize)
+        let slice = ItemPager.page(
+          items, key: { $0.identifier.stringValue }, token: token, size: pageSize)
         let fileProviderItems = slice.items.compactMap {
-          context.item(for: $0.identifier, in: tree)
+          context.item(for: $0.identifier, in: library)
         }
+        ExtensionContext.logger.notice(
+          "File Provider: enumerated \(fileProviderItems.count, privacy: .public) item(s), more: \(slice.next != nil, privacy: .public)"
+        )
         observer.value.didEnumerate(fileProviderItems)
         observer.value.finishEnumerating(upTo: slice.next.map { NSFileProviderPage($0) })
       } catch {
@@ -116,26 +118,26 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
       observer.value.finishEnumeratingChanges(upTo: anchor, moreComing: false)
       return
     }
+    let anchorData = anchor.rawValue
     run { context in
       do {
-        guard let tree = try await context.tree(refresh: true) else {
-          // In-memory fallback: report nothing, above all no deletions.
-          observer.value.finishEnumeratingChanges(upTo: anchor, moreComing: false)
-          return
-        }
+        let library = try await context.libraryForChanges()
         guard let state = context.loadState() else {
           // No state to diff against (first run, or the state was lost).
+          context.setBurst(nil)
           observer.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
           return
         }
-        let page = try ChangePager.nextPage(
-          state: state, from: anchor.rawValue, current: tree.snapshot())
+        let page = try await Task.detached(priority: .userInitiated) {
+          try ChangePager.nextPage(
+            state: state, from: anchorData, current: library.tree.snapshot())
+        }.value
         var updated: [NSFileProviderItem] = []
         var deleted: [NSFileProviderItemIdentifier] = []
         for change in page.run {
           switch change {
           case .update(let identifier):
-            if let item = context.item(for: identifier, in: tree) { updated.append(item) }
+            if let item = context.item(for: identifier, in: library) { updated.append(item) }
           case .delete(let identifier):
             deleted.append(identifier.fileProviderIdentifier)
           }
@@ -143,6 +145,7 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
         // Saved before the page is finished: if the save fails, the page is
         // not reported, and the next call starts from the same state.
         try context.saveState(page.state)
+        context.setBurst(page.moreComing ? library : nil)
         if !updated.isEmpty { observer.value.didUpdate(updated) }
         if !deleted.isEmpty { observer.value.didDeleteItems(withIdentifiers: deleted) }
         observer.value.finishEnumeratingChanges(
@@ -151,8 +154,10 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
         // NSFileProviderError.h: "The value of the sync anchor is too old, and
         // the system must re-sync from scratch". Also the answer to the stub's
         // "stub-v1" anchor.
+        context.setBurst(nil)
         observer.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
       } catch {
+        context.setBurst(nil)
         observer.value.finishEnumeratingWithError(FileProviderErrors.map(error))
       }
     }
@@ -161,20 +166,8 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
   func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
     let handler = Handoff(value: completionHandler)
     run { context in
-      if let state = context.loadState() {
-        handler.value(NSFileProviderSyncAnchor(state.anchor))
-        return
-      }
-      // No state yet: start one from the library as it is now, which is what
-      // the enumeration that follows will list.
       do {
-        guard let tree = try await context.tree(refresh: true) else {
-          handler.value(Self.fallbackAnchor)
-          return
-        }
-        let state = ChangePager.initialState(current: tree.snapshot())
-        try context.saveState(state)
-        handler.value(NSFileProviderSyncAnchor(state.anchor))
+        handler.value(NSFileProviderSyncAnchor(try await context.changeState().anchor))
       } catch {
         ExtensionContext.logger.error("File Provider: no sync anchor: \(error)")
         handler.value(nil)

@@ -26,6 +26,12 @@ enum FileProviderErrors {
     if nsError.domain == NSFileProviderErrorDomain || nsError.domain == NSCocoaErrorDomain {
       return nsError
     }
+    if error is LibraryUnavailable {
+      // The library cannot be read: "the current state of the system /
+      // domain" (each method's "Error cases"), so the system backs off and
+      // keeps its items. Never noSuchItem.
+      return NSFileProviderError(.serverUnreachable) as NSError
+    }
     if error.isCancellationError {
       return CocoaError(.userCancelled) as NSError
     }
