@@ -378,6 +378,11 @@ struct LibraryTreeTests {
     let older = Fixtures.document(1, "Zulu", modified: Fixtures.date(2026, 1, 1))
     let newer = Fixtures.document(1, "Alpha", modified: Fixtures.date(2026, 2, 1))
     #expect(LibraryTree.isPreferred(newer, over: older))
+    // A copy with a modified date beats one without, whatever the titles.
+    var undated = Fixtures.document(1, "Zzz")
+    undated.modified = nil
+    #expect(LibraryTree.isPreferred(older, over: undated))
+    #expect(!LibraryTree.isPreferred(undated, over: older))
     // Without the modified step the same two compare by name.
     #expect(LibraryTree.isPreferred(older, over: newer, name: \.title))
     let alpha = Fixtures.tag(1, "alpha")

@@ -133,8 +133,9 @@ public struct LibraryTree: Sendable {
   }
 
   /// The one rule for which of two copies of one id to keep, so the choice
-  /// never depends on input order: the later `modified` (none counts as
-  /// oldest) when both carry one, then the greater name, then the greater
+  /// never depends on input order: when the type has a modified date, the
+  /// later one wins, and a copy with a date beats one without (a missing date
+  /// counts as `Date.distantPast`); then the greater name, then the greater
   /// full description, which is a total order over the values that build the
   /// tree. Documents pass their `modified` and title. Tags, correspondents
   /// and document types carry no modified date, so for them the greater name
