@@ -7,9 +7,12 @@ import Foundation
 
 /// Per-server settings for how a library is shown in the Files app.
 ///
-/// Decoding is lenient: a missing or unknown value (for example a layout written
-/// by a newer build) falls back to the default for that field instead of
-/// failing, so the extension always has settings to work with.
+/// Decoding never fails on content: a missing or unknown value (for example a
+/// layout written by a newer build) falls back to the default for that field,
+/// and a value that is not an object at all (`null`, an array, a string)
+/// decodes as ``default``. Only bytes that are not JSON make a decoder throw;
+/// ``decode(from:)`` covers that case too, so the extension always has
+/// settings to work with.
 public struct FileProviderSettings: Codable, Equatable, Hashable, Sendable {
   /// Which file a document's item serves.
   public enum Content: String, Codable, CaseIterable, Hashable, Sendable {
@@ -41,9 +44,18 @@ public struct FileProviderSettings: Codable, Equatable, Hashable, Sendable {
     case content
   }
 
+  /// Decodes settings from JSON, or returns ``default`` for anything that
+  /// does not decode. Never throws.
+  public static func decode(from data: Data) -> FileProviderSettings {
+    (try? JSONDecoder().decode(FileProviderSettings.self, from: data)) ?? .default
+  }
+
   public init(from decoder: any Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
     let defaults = FileProviderSettings()
+    guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+      self = defaults
+      return
+    }
 
     let layoutRaw = try? container.decodeIfPresent(String.self, forKey: .layout)
     layout = layoutRaw.flatMap(FolderLayout.init(rawValue:)) ?? defaults.layout

@@ -42,4 +42,22 @@ struct FileProviderSettingsTests {
     let empty = try JSONDecoder().decode(FileProviderSettings.self, from: Data("{}".utf8))
     #expect(empty == FileProviderSettings())
   }
+
+  @Test(
+    "A value that is not an object decodes as the default",
+    arguments: ["null", "[]", "[1,2]", "\"correspondent\"", "42", "true"])
+  func nonObject(_ json: String) throws {
+    let settings = try JSONDecoder().decode(FileProviderSettings.self, from: Data(json.utf8))
+    #expect(settings == .default)
+    #expect(FileProviderSettings.decode(from: Data(json.utf8)) == .default)
+  }
+
+  @Test("decode(from:) never throws, even for bytes that are not JSON")
+  func decodeNeverThrows() throws {
+    #expect(FileProviderSettings.decode(from: Data("not json".utf8)) == .default)
+    #expect(FileProviderSettings.decode(from: Data()) == .default)
+    let stored = FileProviderSettings(layout: .year, browseFolders: [], content: .original)
+    let data = try JSONEncoder().encode(stored)
+    #expect(FileProviderSettings.decode(from: data) == stored)
+  }
 }
