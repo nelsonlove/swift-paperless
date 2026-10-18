@@ -58,13 +58,8 @@ INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*] = UIStatusBarStyleDefault
 INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
 INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
 
-// UIHingeInteraction ships in the iOS 27.1 SDK (CI builds with it, see
-// .xcode-version). Older SDKs lack it: 27.0, and the 26.x SDKs of Xcode 26,
-// including the macOS SDK a Mac Catalyst build uses.
+// UIHingeInteraction ships in the iOS 27.1 SDK (CI builds with it, see .xcode-version). The 27.0 and 26.x SDKs lack it, on every platform, including the macOS SDK a Mac Catalyst build uses.
 HINGE_API_CONDITION = HINGE_API
-HINGE_API_CONDITION[sdk=iphoneos27.0] =
-HINGE_API_CONDITION[sdk=iphonesimulator27.0] =
-HINGE_API_CONDITION[sdk=iphoneos26*] =
-HINGE_API_CONDITION[sdk=iphonesimulator26*] =
-HINGE_API_CONDITION[sdk=macosx26*] =
+HINGE_API_CONDITION[sdk=*27.0] =
+HINGE_API_CONDITION[sdk=*26*] =
 SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) $(HINGE_API_CONDITION)

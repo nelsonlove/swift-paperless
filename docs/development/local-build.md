@@ -19,19 +19,15 @@ for p in Common DataModel Networking Persistence AppShared; do
 done
 ```
 
-`just test` runs the same five. `--disable-keychain` stops SwiftPM from looking up credentials in the login keychain.
+`just test` runs the same five, with the same flag. `--disable-keychain` stops SwiftPM from looking up credentials in the login keychain.
 
 ## Simulator build without a team
 
-The commands below keep git and Xcode source control away from the login keychain, so they also run on a build machine where nobody can answer a prompt. Every dependency is public, so no credentials are needed. Set this environment once in the shell:
+The commands below keep git and Xcode source control away from the login keychain, so they also run on a build machine where nobody can answer a prompt. Every dependency is public, so no credentials are needed. Run them in a subshell, so the environment does not reach later git commands in your terminal:
 
 ```sh
+(
 export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=
-```
-
-The empty `credential.helper` value clears git's credential helpers for this shell only, and `-scmProvider system` below makes Xcode fetch packages with that git instead of its own source control (which reads the keychain).
-
-```sh
 xcodegen generate
 xcodebuild -resolvePackageDependencies \
   -project swift-paperless.xcodeproj \
@@ -47,9 +43,10 @@ xcodebuild build \
   -derivedDataPath build/DerivedData \
   -skipPackagePluginValidation -skipMacroValidation \
   CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER=
+)
 ```
 
-Both commands use the same `-derivedDataPath`, so the build finds the packages the first command resolved. Change the device name and `OS` to a simulator you have (`xcrun simctl list devices available`).
+The empty `credential.helper` value clears git's credential helpers inside the subshell (it replaces any `GIT_CONFIG_COUNT` entries you had there), and `-scmProvider system` makes Xcode fetch packages with that git instead of its own source control, which reads the keychain. Both commands use the same `-derivedDataPath`, so the build finds the packages the first command resolved. Change the device name and `OS` to a simulator you have (`xcrun simctl list devices available`).
 
 `CODE_SIGN_IDENTITY=-` signs ad hoc. It needs no certificate. For a simulator build the linker still embeds the entitlements (the app group, and the keychain group with the placeholder prefix `FAKETEAMID`) in the binary's `__TEXT,__entitlements` section, not in the code signature, so `codesign -d --entitlements` shows an empty list. Read the section instead: `otool -X -s __TEXT __entitlements build/DerivedData/Build/Products/Debug-iphonesimulator/Paperless.app/Paperless` prints it as hex.
 
