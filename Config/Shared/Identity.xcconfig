@@ -9,9 +9,10 @@
 // Common/Sources/Common/AppIdentity.swift, whose defaults must equal the values
 // below (a test in CommonTests checks it).
 //
-// Release builds pin these three settings to the values below in
+// Release builds pin these three settings to the values below, and
+// DEVELOPMENT_TEAM to the one in Base.xcconfig, in
 // scripts/CIArchiveSigning.xcconfig, so an archive never picks up a local
-// identity.
+// identity or team.
 
 SWP_BUNDLE_ID_PREFIX = com.paulgessinger.swift-paperless
 SWP_APP_GROUP = group.com.paulgessinger.swift-paperless
