@@ -206,10 +206,12 @@ final class ExtensionContext {
     }
   }
 
-  /// The change state for the next page: the burst's, as it last saved it,
-  /// else the stored one.
-  func stateForChanges() async -> ChangeState? {
-    if let state = burst.state(at: Date()) { return state }
+  /// The change state for a page asked from `anchor`: the burst's, as it
+  /// last saved it, when the page continues the burst from its anchor; else
+  /// the stored one (a re-ask from the previous anchor needs the previous
+  /// snapshot, which the burst does not keep).
+  func stateForChanges(from anchor: Data) async -> ChangeState? {
+    if let state = burst.state(at: Date(), for: anchor) { return state }
     return await loadState()
   }
 
@@ -294,18 +296,20 @@ final class ExtensionContext {
       .prepareRepository(for: server.stored)
   }
 
-  /// Whether the database, read now, no longer holds document `id`: the
-  /// confirmation a 404 from the server needs before the item is called gone.
-  /// Call it inside ``work(_:)``.
+  /// Whether the database, read now, still holds document `id`: a download
+  /// 404 for a document it no longer holds means the document is gone. Call
+  /// it inside ``work(_:)``.
   ///
   /// - Throws: ``LibraryUnavailable`` when the row cannot be read; that is no
-  ///   confirmation.
-  func documentIsGone(_ id: UInt) async throws -> Bool {
+  ///   confirmation either way.
+  func documentInDatabase(_ id: UInt) async throws -> Bool {
     guard let stack, let serverID else {
       throw LibraryUnavailable(description: "no on-disk database")
     }
     do {
-      return try await stack.database.document(serverID: serverID, id: id) == nil
+      return try await stack.database.document(serverID: serverID, id: id) != nil
+    } catch let error where error.isCancellationError {
+      throw error
     } catch {
       Self.logger.error("File Provider: reading document \(id, privacy: .public) failed: \(error)")
       throw LibraryUnavailable(description: "reading the document failed: \(error)")

@@ -140,7 +140,7 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
     run { context in
       do {
         let (library, generation, plan) = try await context.libraryForChanges()
-        guard let state = await context.stateForChanges() else {
+        guard let state = await context.stateForChanges(from: anchorData) else {
           // No state to diff against (first run, or the state was lost).
           context.endBurst()
           observer.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
