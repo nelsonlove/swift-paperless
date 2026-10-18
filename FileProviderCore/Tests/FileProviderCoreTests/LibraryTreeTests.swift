@@ -96,9 +96,9 @@ struct LibraryTreeTests {
 
   /// Midnight on a day in a given UTC offset, as `DateOnlyCodable` would
   /// decode it in that zone.
-  private func localMidnight(_ year: Int, _ month: Int, _ day: Int, offsetHours: Int) -> Date {
+  private func localMidnight(_ year: Int, _ month: Int, _ day: Int, offsetHours: Double) -> Date {
     var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = TimeZone(secondsFromGMT: offsetHours * 3600)!
+    calendar.timeZone = TimeZone(secondsFromGMT: Int(offsetHours * 3600))!
     return calendar.date(from: DateComponents(year: year, month: month, day: day))!
   }
 
@@ -112,10 +112,21 @@ struct LibraryTreeTests {
     #expect(minusFive.component(.year, from: decodedAtPlusOne) == 2025)
     #expect(LibraryTree.createdYear(decodedAtPlusOne) == 2026)
 
-    for offset in [-11, -5, 0, 1, 9, 12] {
+    // Hawaii (-10), the Marquesas (-9:30), New York (-5), UTC, Paris (+1),
+    // Tokyo (+9), Auckland standard (+12), Chatham (+12:45), and Auckland
+    // summer, Samoa and Tonga (+13).
+    for offset in [-10, -9.5, -5, 0, 1, 9, 12, 12.75, 13] {
       #expect(LibraryTree.createdYear(localMidnight(2026, 1, 1, offsetHours: offset)) == 2026)
       #expect(LibraryTree.createdYear(localMidnight(2025, 12, 31, offsetHours: offset)) == 2025)
     }
+
+    // Kiritimati (+14) is the one populated zone outside the window. It
+    // cannot be inside it together with Hawaii: their midnights coincide one
+    // calendar day apart, so a rule on the instant must pick one of them.
+    let hawaiiNewYear = localMidnight(2026, 1, 1, offsetHours: -10)
+    let kiritimatiNextDay = localMidnight(2026, 1, 2, offsetHours: 14)
+    #expect(hawaiiNewYear == kiritimatiNextDay)
+    #expect(LibraryTree.createdYear(localMidnight(2026, 12, 31, offsetHours: -10)) == 2026)
 
     var document = Fixtures.document(1, "New year letter")
     document.created = decodedAtPlusOne

@@ -150,14 +150,22 @@ public struct LibraryTree: Sendable {
   /// midnight in the time zone current at decode time, and the cache keeps the
   /// absolute `Date`, so reading it with a later zone can land on the
   /// previous or next day (and so the previous or next year on 1 January or
-  /// 31 December). Rounding to the nearest UTC midnight recovers the calendar
-  /// day for any decode-time offset from UTC-11:59 to UTC+12:00 (half a day
-  /// rounds up). Offsets beyond that (UTC-12:00, Chatham UTC+12:45, and
-  /// UTC+13:00 and UTC+14:00, as in Tonga, Samoa, Kiribati and New Zealand
-  /// summer time) round to the neighbouring day.
+  /// 31 December).
+  ///
+  /// A local midnight at offset `z` is the UTC midnight of the same calendar
+  /// day minus `z`. Adding 13.5 hours and taking the UTC day recovers that day
+  /// for every offset from just above UTC-10:30 up to UTC+13:30: that is every
+  /// populated zone from Hawaii (UTC-10) and the Marquesas (UTC-9:30) to
+  /// Samoa, Tonga and New Zealand summer time (UTC+13). The zones it misses
+  /// are UTC-12 and UTC-11 (Baker Island, American Samoa, Niue), Chatham
+  /// summer time (UTC+13:45) and Kiritimati (UTC+14). UTC-10 and UTC+14 cannot
+  /// both be covered: midnight on 1 January in Hawaii is the same instant as
+  /// midnight on 2 January in Kiritimati, so one rule must give one answer
+  /// for both; this one keeps Hawaii.
   public static func createdYear(_ created: Date) -> Int {
+    let shift: TimeInterval = 13.5 * 3600
     let day: TimeInterval = 86_400
-    let days = (created.timeIntervalSince1970 / day + 0.5).rounded(.down)
+    let days = ((created.timeIntervalSince1970 + shift) / day).rounded(.down)
     let midnight = Date(timeIntervalSince1970: days * day)
     return utcCalendar.component(.year, from: midnight)
   }
