@@ -22,12 +22,15 @@ struct Handoff<Value>: @unchecked Sendable {
 /// library is reread on the first page of each enumeration.
 ///
 /// Changes: only the working set reports them. Its `enumerateChanges` answers
-/// one ``TreeDiff`` run per call with ``ChangePager`` and finishes the page with
-/// `moreComing` while runs remain, saving the change state after each run, so
-/// a run is never sent twice and each run is applied before the next one (see
-/// ``TreeDiff``). The pages of one burst diff against one library read, kept
-/// for ``ExtensionContext/burstLifetime`` at most and dropped when the burst
-/// ends, fails, is cancelled or the enumerator is invalidated. The
+/// one ``TreeDiff`` run per call with ``ChangePager``, at most the observer's
+/// `suggestedBatchSize` changes of it (a larger run goes on over the next
+/// calls), and finishes the page with `moreComing` while changes remain,
+/// saving the change state after each page that sent something, so a change
+/// is never sent twice and each run is applied before the next one (see
+/// ``TreeDiff``). The pages of one burst diff against one library read (never
+/// one older than the newest cached read) and keep the change state in
+/// memory, for ``ExtensionContext/burstLifetime`` at most, dropped when the
+/// burst ends, fails, is cancelled or the enumerator is invalidated. The
 /// change state covers every item of the tree, appearances included: the
 /// header says a directory the user enumerated and its children belong to the
 /// working set (NSFileProviderReplicatedExtension.h,
@@ -49,6 +52,8 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
 
   /// Items per page when the system suggests none.
   static let defaultPageSize = 200
+  /// Changes per page when the system suggests no batch size.
+  static let defaultBatchSize = 200
 
   private let holder: ContextHolder
   private let scope: Scope
@@ -129,17 +134,19 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
       return
     }
     let anchorData = anchor.rawValue
+    let batchSize = max(1, observer.value.suggestedBatchSize ?? Self.defaultBatchSize)
     run { context in
       do {
-        let library = try await context.libraryForChanges()
-        guard let state = await context.loadState() else {
+        let (library, generation) = try await context.libraryForChanges()
+        guard let state = await context.stateForChanges() else {
           // No state to diff against (first run, or the state was lost).
           context.endBurst()
           observer.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
           return
         }
         let page = try await Task.detached(priority: .userInitiated) {
-          try ChangePager.nextPage(state: state, from: anchorData, current: library.snapshot)
+          try ChangePager.nextPage(
+            state: state, from: anchorData, current: library.snapshot, batchSize: batchSize)
         }.value
         // Invalidated meanwhile: report nothing and save nothing, so the next
         // call starts from the same state; the burst is over.
@@ -155,12 +162,15 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
           }
         }
         // Saved before the page is finished: if the save fails, the page is
-        // not reported, and the next call starts from the same state.
-        try await context.saveState(page.state)
+        // not reported, and the next call starts from the same state. A page
+        // that sends nothing leaves the state as it is.
+        if !page.run.isEmpty {
+          try await context.saveState(page.state)
+        }
         // A burst invalidated while the state was saved is over; the page is
         // still reported, since the state already records it.
         if page.moreComing, !Task.isCancelled {
-          context.continueBurst(with: library)
+          context.continueBurst(with: library, generation: generation, state: page.state)
         } else {
           context.endBurst()
         }
