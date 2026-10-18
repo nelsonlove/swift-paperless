@@ -66,6 +66,11 @@ targets:
       - target: ShareExtension
         embed: true
         codeSignOnCopy: true
+      # iOS only: see SUPPORTS_MACCATALYST in FileProviderExtension.xcconfig.
+      - target: FileProviderExtension
+        embed: true
+        codeSignOnCopy: true
+        platformFilter: iOS
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -107,6 +112,24 @@ targets:
       - package: Networking
       - package: Persistence
 
+  FileProviderExtension:
+    type: app-extension
+    platform: iOS
+    configFiles:
+      Debug: Config/FileProviderExtension/FileProviderExtension-Debug.xcconfig
+      Release: Config/FileProviderExtension/FileProviderExtension-Release.xcconfig
+    sources:
+      - path: FileProviderExtension
+        excludes:
+          - "Info.plist"
+    dependencies:
+      - package: AppShared
+      - package: Networking
+      - package: Persistence
+      - package: Common
+      - package: DataModel
+      - package: FileProviderCore
+
   swift-paperlessUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -146,6 +169,19 @@ schemes:
     build:
       targets:
         ShareExtension: all
+        swift-paperless: all
+    run:
+      config: Debug
+      debugEnabled: false
+    profile:
+      config: Release
+    archive:
+      config: Release
+
+  FileProviderExtension:
+    build:
+      targets:
+        FileProviderExtension: all
         swift-paperless: all
     run:
       config: Debug
