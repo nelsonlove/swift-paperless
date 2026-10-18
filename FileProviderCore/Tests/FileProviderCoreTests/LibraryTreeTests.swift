@@ -94,6 +94,35 @@ struct LibraryTreeTests {
     expectCanonicalOnce(tree, Fixtures.documents)
   }
 
+  /// Midnight on a day in a given UTC offset, as `DateOnlyCodable` would
+  /// decode it in that zone.
+  private func localMidnight(_ year: Int, _ month: Int, _ day: Int, offsetHours: Int) -> Date {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: offsetHours * 3600)!
+    return calendar.date(from: DateComponents(year: year, month: month, day: day))!
+  }
+
+  @Test("The created year does not depend on the zone it was decoded in")
+  func createdYearAcrossZones() {
+    // Decoded at UTC+1 on 1 January: 2025-12-31T23:00Z. A tree built in UTC-5
+    // with that zone's calendar would say 2025.
+    let decodedAtPlusOne = localMidnight(2026, 1, 1, offsetHours: 1)
+    var minusFive = Calendar(identifier: .gregorian)
+    minusFive.timeZone = TimeZone(secondsFromGMT: -5 * 3600)!
+    #expect(minusFive.component(.year, from: decodedAtPlusOne) == 2025)
+    #expect(LibraryTree.createdYear(decodedAtPlusOne) == 2026)
+
+    for offset in [-11, -5, 0, 1, 9, 12] {
+      #expect(LibraryTree.createdYear(localMidnight(2026, 1, 1, offsetHours: offset)) == 2026)
+      #expect(LibraryTree.createdYear(localMidnight(2025, 12, 31, offsetHours: offset)) == 2025)
+    }
+
+    var document = Fixtures.document(1, "New year letter")
+    document.created = decodedAtPlusOne
+    let tree = Fixtures.tree(settings(.year), documents: [document])
+    #expect(tree.parent(of: .document(1)) == .folder(.year(2026)))
+  }
+
   @Test("Correspondent and year layout nests years in correspondents")
   func correspondentYearLayout() {
     let tree = Fixtures.tree(settings(.correspondentYear))
@@ -246,7 +275,7 @@ struct LibraryTreeTests {
     correspondents.append(Fixtures.correspondent(5, "Acme Utilities"))
     let tree = LibraryTree(
       documents: documents, tags: [], correspondents: correspondents,
-      documentTypes: [], settings: settings(.correspondent), calendar: Fixtures.calendar)
+      documentTypes: [], settings: settings(.correspondent))
     #expect(tree.names(.folder(.correspondent(1))) == ["bill (#20).pdf", "Bill (#21).pdf"])
     #expect(tree.names(.root) == ["Acme Utilities (#1)", "Acme Utilities (#5)"])
   }

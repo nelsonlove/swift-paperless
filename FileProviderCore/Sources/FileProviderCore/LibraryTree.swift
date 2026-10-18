@@ -108,13 +108,12 @@ public struct LibraryTree: Sendable {
     // not change then.
     storagePaths: [StoragePath] = [],
     settings: FileProviderSettings = .default,
-    labels: TreeLabels = TreeLabels(),
-    calendar: Calendar = LibraryTree.defaultCalendar
+    labels: TreeLabels = TreeLabels()
   ) {
     self.settings = settings
     var builder = Builder(
       tags: tags, correspondents: correspondents, documentTypes: documentTypes,
-      settings: settings, labels: labels, calendar: calendar)
+      settings: settings, labels: labels)
 
     // Sorted by id, and the first copy of a duplicated id wins, so the result
     // does not depend on input order.
@@ -127,13 +126,30 @@ public struct LibraryTree: Sendable {
     (items, childIDs) = builder.finish()
   }
 
-  /// Gregorian in the current time zone, which is how `Document.created`
-  /// (a date-only value) is decoded.
-  public static var defaultCalendar: Calendar {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = .current
-    return calendar
+  /// The year of a document's `created` date, independent of the current
+  /// time zone.
+  ///
+  /// `created` is date-only on the server. `DateOnlyCodable` decodes it as
+  /// midnight in the time zone current at decode time, and the cache keeps the
+  /// absolute `Date`, so reading it with a later zone can land on the
+  /// previous or next day (and so the previous or next year on 1 January or
+  /// 31 December). Rounding to the nearest UTC midnight recovers the calendar
+  /// day for any decode-time offset from UTC-11:59 to UTC+12:00 (half a day
+  /// rounds up). Offsets beyond that (UTC-12:00, Chatham UTC+12:45, and
+  /// UTC+13:00 and UTC+14:00, as in Tonga, Samoa, Kiribati and New Zealand
+  /// summer time) round to the neighbouring day.
+  public static func createdYear(_ created: Date) -> Int {
+    let day: TimeInterval = 86_400
+    let days = (created.timeIntervalSince1970 / day + 0.5).rounded(.down)
+    let midnight = Date(timeIntervalSince1970: days * day)
+    return utcCalendar.component(.year, from: midnight)
   }
+
+  private static let utcCalendar: Calendar = {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    return calendar
+  }()
 
   /// The item for an identifier, or `nil` if the tree has no such item.
   public func item(for identifier: ItemIdentifier) -> TreeItem? {
@@ -206,7 +222,6 @@ extension LibraryTree {
   private struct Builder {
     let settings: FileProviderSettings
     let labels: TreeLabels
-    let calendar: Calendar
     let tagsByID: [UInt: Tag]
     let tagParents: [UInt: UInt]
     let correspondentsByID: [UInt: Correspondent]
@@ -216,11 +231,10 @@ extension LibraryTree {
 
     init(
       tags: [Tag], correspondents: [Correspondent], documentTypes: [DocumentType],
-      settings: FileProviderSettings, labels: TreeLabels, calendar: Calendar
+      settings: FileProviderSettings, labels: TreeLabels
     ) {
       self.settings = settings
       self.labels = labels
-      self.calendar = calendar
       tagsByID = Dictionary(tags.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
       tagParents = Builder.effectiveTagParents(tagsByID)
       correspondentsByID = Dictionary(
@@ -330,14 +344,14 @@ extension LibraryTree {
         return folder
 
       case .year:
-        let year = calendar.component(.year, from: document.created)
+        let year = LibraryTree.createdYear(document.created)
         let folder = ItemIdentifier.folder(.year(year))
         addFolder(folder, parent: .root, name: String(year), disambiguator: String(year))
         return folder
 
       case .correspondentYear:
         let id = document.correspondent
-        let year = calendar.component(.year, from: document.created)
+        let year = LibraryTree.createdYear(document.created)
         let outer = ItemIdentifier.folder(.correspondentYear(correspondent: id, year: nil))
         addFolder(outer, parent: .root, name: correspondentName(id), disambiguator: key(id))
         let inner = ItemIdentifier.folder(.correspondentYear(correspondent: id, year: year))

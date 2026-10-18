@@ -85,7 +85,7 @@ enum Fixtures {
   ) -> LibraryTree {
     LibraryTree(
       documents: documents, tags: tags, correspondents: correspondents,
-      documentTypes: documentTypes, settings: settings, calendar: calendar)
+      documentTypes: documentTypes, settings: settings)
   }
 }
 
