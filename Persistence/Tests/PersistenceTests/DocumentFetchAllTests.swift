@@ -76,8 +76,31 @@ struct DocumentFetchAllTests {
     // `after` is exclusive and need not be a cached id.
     #expect(ids(try await database.documents(serverID: server, after: 4, limit: 10)) == [5, 7, 9])
     #expect(ids(try await database.documents(serverID: server, after: 9, limit: 10)).isEmpty)
-    #expect(ids(try await database.documents(serverID: server, after: nil, limit: 10)) == [1, 3, 5, 7, 9])
+    let firstTen = try await database.documents(serverID: server, after: nil, limit: 10)
+    #expect(ids(firstTen) == [1, 3, 5, 7, 9])
     #expect(ids(try await database.documents(serverID: server, after: nil, limit: 0)).isEmpty)
+    #expect(ids(try await database.documents(serverID: server, after: nil, limit: -1)).isEmpty)
     #expect(ids(try await database.documents(serverID: server)) == [1, 3, 5, 7, 9])
+  }
+
+  @Test("walking pages by the last id visits every id once, then ends")
+  func cursorWalk() async throws {
+    let server = UUID()
+    let database = try Database.seeded(serverID: server)
+    try await database.upsertDocuments(
+      (1...7).map { doc(UInt($0), "D\($0)") }, serverID: server)
+
+    var seen: [UInt] = []
+    var cursor: UInt?
+    var calls = 0
+    while true {
+      let page = try await database.documents(serverID: server, after: cursor, limit: 3)
+      calls += 1
+      if page.isEmpty { break }
+      seen += ids(page)
+      cursor = page.last?.id
+    }
+    #expect(seen == Array(1...7))
+    #expect(calls == 4)
   }
 }
