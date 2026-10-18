@@ -28,6 +28,18 @@ public struct TreeItem: Hashable, Sendable {
 
   public var isFolder: Bool { kind == .folder }
 
+  /// The content version for File Provider: ``version`` for a document, a
+  /// constant for a folder (its children report their own changes).
+  public var contentVersion: String {
+    isFolder ? "folder" : version
+  }
+
+  /// The metadata version for File Provider: changes exactly when the parent
+  /// or the name changes, the metadata Files shows for a read-only item.
+  public var metadataVersion: String {
+    "\(parent.stringValue)\n\(name)"
+  }
+
   public init(
     identifier: ItemIdentifier, parent: ItemIdentifier, name: String, kind: Kind,
     version: String

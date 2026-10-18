@@ -62,6 +62,25 @@ public struct TreeSnapshot: Codable, Equatable, Sendable {
   }
 }
 
+extension TreeSnapshot {
+  /// This snapshot after the system has applied `run`: an update takes the
+  /// entry from `new`, a deletion removes the entry. Used to record what the
+  /// system knows after each page of changes, so the next page starts from
+  /// there and never resends a run.
+  public func applying(run: [TreeDiff.Change], from new: TreeSnapshot) -> TreeSnapshot {
+    var result = self
+    for change in run {
+      switch change {
+      case .update(let identifier):
+        result.entries[identifier] = new.entries[identifier]
+      case .delete(let identifier):
+        result.entries[identifier] = nil
+      }
+    }
+    return result
+  }
+}
+
 extension LibraryTree {
   /// A snapshot of this tree.
   public func snapshot(_ scope: TreeSnapshot.Scope = .all) -> TreeSnapshot {
