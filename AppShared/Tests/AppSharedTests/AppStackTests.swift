@@ -47,4 +47,28 @@ struct AppStackTests {
     #expect(report.removedFiles == 0)
     #expect(!report.walked)
   }
+
+  @Test("A stack built for the File Provider extension leaves open sync steps alone")
+  func extensionLeavesSyncStepsOpen() async throws {
+    let database = try Database.seeded()
+    let started = Date(timeIntervalSinceNow: -60)
+    _ = try await database.beginSyncStep(
+      runID: UUID(), serverID: nil, trigger: "test", step: "sync", at: started)
+
+    _ = AppStack(database: database, role: .fileProviderExtension)
+    // Give a launch task, if one were started, the time to run.
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(try await database.syncRuns().allSatisfy(\.isOpen))
+
+    // The app's stack closes it, so the wait above was long enough to see it.
+    let app = AppStack(database: database)
+    _ = app
+    let deadline = ContinuousClock.now + .seconds(5)
+    var closed = false
+    while !closed, ContinuousClock.now < deadline {
+      closed = try await database.syncRuns().allSatisfy { !$0.isOpen }
+      if !closed { try await Task.sleep(for: .milliseconds(10)) }
+    }
+    #expect(closed, "the app stack never closed the open step")
+  }
 }

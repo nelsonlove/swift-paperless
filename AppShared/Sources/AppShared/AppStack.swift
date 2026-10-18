@@ -38,13 +38,27 @@ public final class AppStack {
     // work starts.
     linkCost: { [weak self] in self?.networkMonitor.cost ?? .unknown })
 
-  /// - Parameter contentStore: where downloaded files live; `nil` caches no
-  ///   files. Only the on-disk database may be paired with the app-group store:
-  ///   an index that does not outlive the process would judge every file on
-  ///   disk unaccounted for.
+  /// Which process builds the stack. The File Provider extension runs next to
+  /// a live app, so it must not do the app's launch steps.
+  public enum Role: Sendable {
+    /// The app and the Share Extension: closes the sync steps a previous
+    /// process left open.
+    case app
+    /// The File Provider extension: reads the library and fetches files, and
+    /// leaves the sync history alone. An open step there is usually the app's
+    /// live sync, not an interrupted one.
+    case fileProviderExtension
+  }
+
+  /// - Parameters:
+  ///   - contentStore: where downloaded files live; `nil` caches no files.
+  ///     Only the on-disk database may be paired with the app-group store: an
+  ///     index that does not outlive the process would judge every file on
+  ///     disk unaccounted for.
+  ///   - role: `.fileProviderExtension` skips every launch step.
   init(
     database: Database, suspension: DatabaseSuspensionController? = nil,
-    contentStore: ContentStore? = nil
+    contentStore: ContentStore? = nil, role: Role = .app
   ) {
     self.database = database
     let suspension = suspension ?? DatabaseSuspensionController()
@@ -66,6 +80,8 @@ public final class AppStack {
         }
       }
     }
+
+    guard role == .app else { return }
 
     // Steps the previous process never finished. Only rows older than this
     // process, so a step this one starts first is left alone.
@@ -116,27 +132,32 @@ public enum AppStackHolder {
 
   /// The process's stack, opening the app-group database on first call. Throws
   /// what ``Persistence/Database`` throws.
-  public static func shared() throws -> AppStack {
+  ///
+  /// `role` applies when this call builds the stack; a process uses one role.
+  public static func shared(role: AppStack.Role = .app) throws -> AppStack {
     if let cached {
       return cached
     }
     let stack = AppStack(
-      database: try Database(), suspension: suspension, contentStore: try? ContentStore())
+      database: try Database(), suspension: suspension, contentStore: try? ContentStore(),
+      role: role)
     cached = stack
     return stack
   }
 
   /// The process's stack, falling back to an in-memory database instead of
   /// throwing, for entry points with no UI for a bootstrap failure.
-  public static func sharedWithInMemoryFallback(context: String) -> AppStack {
+  public static func sharedWithInMemoryFallback(
+    context: String, role: AppStack.Role = .app
+  ) -> AppStack {
     do {
-      return try shared()
+      return try shared(role: role)
     } catch {
       Logger.shared.fault(
         "\(context, privacy: .public) database bootstrap failed (\(error)); falling back to in-memory"
       )
       do {
-        return AppStack(database: try Database.inMemory())
+        return AppStack(database: try Database.inMemory(), role: role)
       } catch {
         // `preconditionFailure` only puts its message in the crash report.
         Logger.shared.fault(
