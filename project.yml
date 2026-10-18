@@ -35,6 +35,8 @@ packages:
     path: AppShared
   AppViews:
     path: AppViews
+  FileProviderCore:
+    path: FileProviderCore
   Nuke:
     url: https://github.com/kean/Nuke
     majorVersion: 12.0.0
