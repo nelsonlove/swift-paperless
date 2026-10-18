@@ -29,11 +29,13 @@
   /// a server with no domain gets one, a domain whose server is gone is
   /// removed, and a renamed server's domain is renamed in place by adding it
   /// again (never removed, which would drop its files, Recents and bookmarks).
-  /// The decision is ``DomainReconcile``'s; this type only applies it.
+  /// The decision, domain names included (servers that share a display name,
+  /// names kept stable), is ``DomainReconcile``'s; this type only applies it.
   ///
-  /// Each pass starts from the in-memory server list it observes and maps it
-  /// to the wanted `[identifier: name]`. A pass whose map equals what the last
-  /// pass applied does nothing more: no database read, no call to the system.
+  /// Each pass starts from the in-memory server list it observes, as the
+  /// reconcile's input (identifier, display name, user name). A pass whose
+  /// input equals what the last pass applied in full does nothing more: no
+  /// database read, no call to the system.
   /// Otherwise the pass reads the server rows from the database, so a failed
   /// hydrate cannot pass for "no servers", and works from that read.
   ///
@@ -45,9 +47,9 @@
   ///   read no longer holds, loses its domain. A database that was just wiped
   ///   or recreated empty therefore removes nothing.
   ///
-  /// A failed add or rename is logged once per name and not recorded as
-  /// applied, so the next change of the server list tries it again; nothing
-  /// retries it in a loop.
+  /// A failed add, rename or removal is logged (an add once per name) and
+  /// leaves the pass unapplied, so the next change of the server list tries
+  /// again; nothing retries it in a loop.
   ///
   /// Only the app runs this. The extensions never add or remove domains.
   @MainActor
@@ -58,9 +60,9 @@
     private let manager: (any FileProviderDomainManaging)?
     private var observationTask: Task<Void, Never>?
 
-    /// What the last pass left in place, by domain identifier; `nil` before
-    /// the first pass.
-    private var applied: [String: String]?
+    /// The servers the last pass applied in full (every add, rename and
+    /// removal succeeded); `nil` before that.
+    private var applied: Set<DomainReconcile.Server>?
     /// Every server identifier a successful read in this process has held.
     private var seen: Set<String> = []
     /// Adds that failed, as "identifier name", so each is logged once.
@@ -153,14 +155,23 @@
       await pass(observed: observed())
     }
 
-    private static func names(_ servers: [UUID: StoredConnection]) -> [String: String] {
-      Dictionary(
-        uniqueKeysWithValues: servers.map { ($0.key.uuidString, displayName(for: $0.value)) })
+    /// The reconcile's input. Domain names, including telling apart servers
+    /// that share a display name and keeping names stable, are
+    /// ``DomainReconcile``'s.
+    private static func servers(
+      _ servers: [UUID: StoredConnection]
+    ) -> Set<DomainReconcile.Server> {
+      Set(
+        servers.map {
+          DomainReconcile.Server(
+            identifier: $0.key.uuidString, displayName: displayName(for: $0.value),
+            userName: $0.value.user.username)
+        })
     }
 
     private func pass(observed current: [UUID: StoredConnection]) async {
       guard let manager else { return }
-      if let applied, applied == Self.names(current) { return }
+      if let applied, applied == Self.servers(current) { return }
 
       readCount += 1
       let rows: [UUID: StoredConnection]
@@ -171,7 +182,7 @@
           "Reading the servers failed; File Provider domains left as they are: \(error)")
         return
       }
-      let wanted = Self.names(rows)
+      let wanted = Self.servers(rows)
       let existingList: [DomainReconcile.Domain]
       do {
         existingList = try await manager.domains()
@@ -181,19 +192,18 @@
       }
       let existing = Dictionary(
         existingList.map { ($0.identifier, $0.displayName) }, uniquingKeysWith: { first, _ in first })
-      let result = DomainReconcile.reconcile(servers: wanted, domains: existing)
-
-      // Domains that already match, plus whatever this pass manages to apply.
-      var nowApplied = existing.filter { wanted[$0.key] == $0.value }
+      let result = DomainReconcile.reconcile(
+        servers: wanted.sorted { $0.identifier < $1.identifier }, domains: existing)
+      var complete = true
 
       for domain in result.add + result.renameInPlace {
         do {
           try await manager.add(domain)
-          nowApplied[domain.identifier] = domain.displayName
           loggedFailures.remove("\(domain.identifier) \(domain.displayName)")
           Logger.fileProvider.info(
             "File Provider domain \(domain.identifier, privacy: .public) added or renamed")
         } catch {
+          complete = false
           if loggedFailures.insert("\(domain.identifier) \(domain.displayName)").inserted {
             Logger.fileProvider.error(
               "Adding File Provider domain \(domain.identifier, privacy: .public) failed: \(error)")
@@ -213,21 +223,24 @@
           Logger.fileProvider.info(
             "File Provider domain \(domain.identifier, privacy: .public) removed")
         } catch {
+          complete = false
           Logger.fileProvider.error(
             "Removing File Provider domain \(domain.identifier, privacy: .public) failed: \(error)")
         }
       }
 
       if allowsRemoval {
-        seen.formUnion(wanted.keys)
+        seen.formUnion(wanted.map(\.identifier))
       }
-      // Compared with the next observed list. A domain kept for safety is not
-      // in `wanted`, so it never makes a later pass look unapplied by itself.
-      applied = nowApplied
+      // Compared with the next observed list. A failure leaves the pass
+      // unapplied, so the next change of the list tries again. A domain kept
+      // for safety does not count as a failure.
+      applied = complete ? wanted : nil
     }
 
-    /// The location name in Files: the server's friendly name, else its host,
-    /// else its whole URL.
+    /// The server's display name handed to ``DomainReconcile``: its friendly
+    /// name, else its host, else its whole URL. The domain name Files shows is
+    /// derived from it there.
     public nonisolated static func displayName(for server: StoredConnection) -> String {
       if let name = server.friendlyName?.trimmingCharacters(in: .whitespacesAndNewlines),
         !name.isEmpty

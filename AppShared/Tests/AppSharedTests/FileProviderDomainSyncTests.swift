@@ -113,6 +113,36 @@
       #expect(await domains.calls == ["add \(id.uuidString) New"])
     }
 
+    @Test("Two servers on one host get distinct names from the reconcile")
+    func sameHostServersGetDistinctNames() async {
+      let first = UUID()
+      let second = UUID()
+      let domains = FakeDomains()
+      let sync = confirmed([first: server(first), second: server(second)], domains)
+
+      await sync.reconcile()
+
+      let names = await domains.current
+      #expect(names.count == 2)
+      #expect(Set(names.values).count == 2)
+    }
+
+    @Test("A new server with an existing domain's name leaves that domain's name alone")
+    func existingNameStaysStable() async {
+      let old = UUID()
+      let new = UUID()
+      let domains = FakeDomains([old.uuidString: "Home"])
+      let sync = confirmed(
+        [old: server(old, name: "Home"), new: server(new, name: "Home")], domains)
+
+      await sync.reconcile()
+
+      let calls = await domains.calls
+      #expect(calls.count == 1)
+      #expect(calls.first?.hasPrefix("add \(new.uuidString) Home (") == true)
+      #expect(await domains.current[old.uuidString] == "Home")
+    }
+
     @Test("A server seen in an earlier read and then deleted loses its domain")
     func removesSeenThenDeleted() async {
       let kept = UUID()
