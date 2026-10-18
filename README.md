@@ -58,9 +58,9 @@ just generate           # or: xcodegen generate
 open swift-paperless.xcodeproj
 ```
 
-`just build` / `just test-xcode` regenerate the project automatically. Edit
-`project.yml` (targets, sources, dependencies) and `Config/*.xcconfig` (build
-settings) rather than the generated project, then re-run `just generate`.
+With Xcode 27.x and the project's signing team, `just build` regenerates the project automatically; `just test` runs the package tests on macOS with `swift test`. Edit `project.yml` (targets, sources, dependencies) and `Config/*.xcconfig` (build settings) rather than the generated project, then re-run `just generate`.
+
+To build with an older Xcode (26.x) or without an Apple developer team, see [docs/development/local-build.md](docs/development/local-build.md).
 
 ## Contact
 

@@ -127,7 +127,7 @@ build os=default_os device=default_device: generate
   xcodebuild -scheme swift-paperless -project ./swift-paperless.xcodeproj -configuration Release -destination "platform=iOS Simulator,OS={{os}},name={{device}}" | xcbeautify
 
 _test_swift package:
-  swift test --package-path {{package}}
+  swift test --package-path {{package}} --disable-keychain
 
 # Host-runnable package tests (Common, DataModel, Networking, Persistence,
 # AppShared) run natively on macOS via `swift test`. AppViews is iOS-only and
