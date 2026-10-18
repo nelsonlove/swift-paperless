@@ -169,8 +169,10 @@ extension ExpiringValue: Sendable where Value: Sendable {}
 /// What one burst of change pages keeps between its pages, for at most
 /// `lifetime`: the library the pages diff against, with the generation of the
 /// read that produced it (``LatestWins/generation``), the change state as last
-/// saved, and the runs that remain (``ChangePager/Page/remaining``), so a page
-/// neither rereads the library, nor decodes the state, nor diffs again.
+/// saved but without its previous snapshot (the next page of the burst starts
+/// from the current anchor and does not need it), and the runs that remain
+/// (``ChangePager/Page/remaining``), so a page neither rereads the library,
+/// nor decodes the state, nor diffs again.
 ///
 /// The library is used only while no newer read has been cached: a lookup or
 /// an enumeration may have read the library after the burst started, and a
@@ -211,20 +213,26 @@ public struct ChangeBurst<Library> {
     return .burst(entry.library, generation: entry.generation, plan: entry.plan)
   }
 
-  /// The change state the burst last saved, unless there is no burst or it
-  /// expired.
-  public func state(at now: Date) -> ChangeState? {
-    stored.value(at: now)?.state
+  /// The change state the burst last saved, without its previous snapshot,
+  /// for a page asked from that state's own `anchor`; `nil` for any other
+  /// anchor (the previous one needs the stored state), when there is no
+  /// burst, or when it expired.
+  public func state(at now: Date, for anchor: Data) -> ChangeState? {
+    guard let state = stored.value(at: now)?.state, state.anchor == anchor else { return nil }
+    return state
   }
 
-  /// Keeps `library` (from the read of `generation`), `state` and the runs
-  /// that remain for the next page, as of `now`.
+  /// Keeps `library` (from the read of `generation`), `state` (without its
+  /// previous snapshot) and the runs that remain for the next page, as of
+  /// `now`.
   public mutating func keep(
     library: Library, generation: UInt64, state: ChangeState, plan: [[TreeDiff.Change]],
     at now: Date
   ) {
+    var current = state
+    current.previousSnapshot = nil
     stored.set(
-      Entry(library: library, generation: generation, state: state, plan: plan), at: now)
+      Entry(library: library, generation: generation, state: current, plan: plan), at: now)
   }
 
   /// Ends the burst.

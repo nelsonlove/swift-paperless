@@ -191,7 +191,25 @@ struct ChangeBurstTests {
     #expect(library == "new")
     #expect(generation == 3)
     // The saved state is still good.
-    #expect(burst.state(at: now) == state)
+    #expect(burst.state(at: now, for: state.anchor) == state)
+  }
+
+  @Test("The burst keeps the state without its previous snapshot, for its own anchor only")
+  func lightState() throws {
+    var burst = ChangeBurst<String>(lifetime: 30)
+    let now = Date()
+    let page = try ChangePager.nextPage(
+      state: state, from: state.anchor,
+      current: TreeSnapshot(entries: [
+        .document(1): .init(parent: .root, name: "A.pdf", version: "v", isFolder: false)
+      ]))
+    #expect(page.state.previousSnapshot != nil)
+    burst.keep(library: "burst", generation: 1, state: page.state, plan: [], at: now)
+    let kept = try #require(burst.state(at: now, for: page.anchor))
+    #expect(kept.previousSnapshot == nil)
+    #expect(kept.snapshot == page.state.snapshot)
+    // The previous anchor needs the stored state.
+    #expect(burst.state(at: now, for: state.anchor) == nil)
   }
 
   @Test("An expired or ended burst reads afresh")
@@ -203,9 +221,9 @@ struct ChangeBurstTests {
       Issue.record("expected a read")
       return
     }
-    #expect(burst.state(at: now.addingTimeInterval(31)) == nil)
+    #expect(burst.state(at: now.addingTimeInterval(31), for: state.anchor) == nil)
     burst.end(at: now)
-    #expect(burst.state(at: now) == nil)
+    #expect(burst.state(at: now, for: state.anchor) == nil)
   }
 
   @Test("freshEntry returns the generation of the value it hands out")

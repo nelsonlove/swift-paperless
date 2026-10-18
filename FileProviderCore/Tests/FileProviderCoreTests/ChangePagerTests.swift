@@ -417,4 +417,56 @@ struct ChangePagerBatchTests {
     #expect(sawDeletionFirst == true)
     #expect(current.snapshot == newer)
   }
+
+  private func documents(_ names: [UInt: String]) -> TreeSnapshot {
+    var entries: [ItemIdentifier: TreeSnapshot.Entry] = [:]
+    for (id, name) in names {
+      entries[.document(id)] = TreeSnapshot.Entry(
+        parent: .root, name: name, version: "v", isFolder: false)
+    }
+    return TreeSnapshot(entries: entries)
+  }
+
+  /// Drains with batch size 1 and checks every page boundary.
+  private func drainChecked(from old: TreeSnapshot, to new: TreeSnapshot) throws
+    -> [ChangePager.Page]
+  {
+    var pages: [ChangePager.Page] = []
+    var state = ChangePager.initialState(current: old, epoch: "e")
+    var anchor = state.anchor
+    while true {
+      let page = try ChangePager.nextPage(state: state, from: anchor, current: new, batchSize: 1)
+      if page.run.isEmpty { break }
+      #expect(!hasDuplicateNames(page.state.snapshot))
+      pages.append(page)
+      state = page.state
+      anchor = page.anchor
+    }
+    #expect(state.snapshot == new)
+    return pages
+  }
+
+  @Test("Two siblings that swap names are sent in one page, even with batch size 1")
+  func swapNotCut() throws {
+    let old = documents([1: "A.pdf", 2: "B.pdf", 3: "C.pdf"])
+    let new = documents([1: "B.pdf", 2: "A.pdf", 3: "D.pdf"])
+    let pages = try drainChecked(from: old, to: new)
+    #expect(pages.first?.run == [.update(.document(1)), .update(.document(2))])
+    // The unrelated rename still goes in a batch of its own.
+    #expect(pages.count == 2)
+  }
+
+  @Test("A chain of names is sent in one page, even with batch size 1")
+  func chainNotCut() throws {
+    // 1 takes 2's name, 2 takes 3's, 3 takes a new one; names compare as the
+    // file system does, so "b.pdf" takes the place of "B.pdf".
+    let old = documents([1: "A.pdf", 2: "B.pdf", 3: "C.pdf", 4: "Z.pdf"])
+    let new = documents([1: "b.pdf", 2: "C.pdf", 3: "D.pdf", 4: "Y.pdf"])
+    let pages = try drainChecked(from: old, to: new)
+    #expect(
+      pages.first?.run == [
+        .update(.document(1)), .update(.document(2)), .update(.document(3)),
+      ])
+    #expect(pages.count == 2)
+  }
 }

@@ -59,6 +59,12 @@ public struct ChangeState: Codable, Equatable, Sendable {
 /// its first non-empty run: deletions that are safe now, including any a
 /// newer read added, go before the rest of a cut updates run, so a sibling
 /// renamed to a deleted item's name never shares it with that item.
+///
+/// An updates run is never cut inside a group of updates that take each
+/// other's places (two siblings that swap names, a chain where one takes the
+/// name another gives up): the page goes on to the end of the group, past the
+/// batch size if it must, so no page boundary shows two siblings with one
+/// name.
 public enum ChangePager {
   public enum Failure: Error, Equatable {
     /// The anchor is unknown, from another state, or from the stub
@@ -68,7 +74,8 @@ public enum ChangePager {
 
   public struct Page: Equatable, Sendable {
     /// The changes to report, from one run: all updates or all deletions, at
-    /// most the batch size. Empty when the system is up to date.
+    /// most the batch size unless a group of updates that take each other's
+    /// places runs past it. Empty when the system is up to date.
     public var run: [TreeDiff.Change]
     /// The anchor to finish the page with.
     public var anchor: Data
@@ -97,7 +104,8 @@ public enum ChangePager {
   }
 
   /// The next page of changes from `anchor`, at most `batchSize` changes
-  /// (a size below 1 counts as 1).
+  /// (a size below 1 counts as 1), or more to keep a group of updates that
+  /// take each other's places whole (see ``cut(_:at:base:current:)``).
   ///
   /// - Parameter plan: the ``Page/remaining`` runs of the previous page of
   ///   this burst, valid only for the same `state` and `current`; used when
@@ -136,7 +144,8 @@ public enum ChangePager {
     }
 
     let full = runs[index]
-    let run = Array(full.prefix(max(1, batchSize)))
+    let end = cut(full, at: max(1, batchSize), base: base, current: current)
+    let run = Array(full.prefix(end))
     var remaining = runs
     remaining[index] = Array(full.dropFirst(run.count))
 
@@ -153,6 +162,53 @@ public enum ChangePager {
     return Page(
       run: run, anchor: next.anchor, moreComing: moreComing, state: next,
       remaining: moreComing ? remaining : [])
+  }
+
+  /// Where to end a page of `run` that wants `proposed` changes: `proposed`,
+  /// moved later until no group of updates that take each other's places is
+  /// split. Update U and update V are in one group when U's new place (its
+  /// new parent and name, compared as the file system compares names) is
+  /// where V is in `base`, so sending U without V would put two items in
+  /// one place.
+  static func cut(
+    _ run: [TreeDiff.Change], at proposed: Int, base: TreeSnapshot, current: TreeSnapshot
+  ) -> Int {
+    guard proposed < run.count else { return run.count }
+    func place(_ entry: TreeSnapshot.Entry) -> String {
+      "\(entry.parent.stringValue)\u{0}\(FileNaming.comparisonKey(entry.name))"
+    }
+    var group = Array(run.indices)
+    func root(_ index: Int) -> Int {
+      var index = index
+      while group[index] != index {
+        group[index] = group[group[index]]
+        index = group[index]
+      }
+      return index
+    }
+    var atBasePlace: [String: [Int]] = [:]
+    for (index, change) in run.enumerated() {
+      guard case .update(let id) = change, let old = base.entries[id] else { continue }
+      atBasePlace[place(old), default: []].append(index)
+    }
+    guard !atBasePlace.isEmpty else { return proposed }
+    for (index, change) in run.enumerated() {
+      guard case .update(let id) = change, let new = current.entries[id] else { continue }
+      for other in atBasePlace[place(new)] ?? [] where other != index {
+        group[root(other)] = root(index)
+      }
+    }
+    var last: [Int: Int] = [:]
+    for index in run.indices {
+      last[root(index)] = index
+    }
+    var end = proposed
+    var index = 0
+    while index < end {
+      end = max(end, last[root(index)]! + 1)
+      index += 1
+    }
+    return end
   }
 }
 
