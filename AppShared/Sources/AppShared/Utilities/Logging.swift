@@ -5,12 +5,12 @@
 //  Created by Paul Gessinger on 03.05.23.
 //
 
+import Common
 import Foundation
 import os
 
 extension Logger {
-  // `bundleIdentifier` is nil in the SwiftPM test runner on the host.
-  private static let subsystem = Bundle.main.bundleIdentifier ?? "swift-paperless"
+  private static let subsystem = AppIdentity.bundleIDPrefix
 
   public static let shared = Logger(subsystem: subsystem, category: "General")
   public static let api = Logger(subsystem: subsystem, category: "API")

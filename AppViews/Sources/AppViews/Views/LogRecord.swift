@@ -1,4 +1,5 @@
 import AppShared
+import Common
 import CoreTransferable
 import Foundation
 import OSLog
@@ -28,7 +29,7 @@ private class LogRecordViewModel {
         try store
         .getEntries(at: position)
         .compactMap { $0 as? OSLogEntryLog }
-        .filter { $0.subsystem == Bundle.main.bundleIdentifier! }
+        .filter { $0.subsystem == AppIdentity.bundleIDPrefix }
         .map { "[\($0.date.formatted())] [\($0.category)] \($0.composedMessage)" }
         .joined(separator: "\n")
 

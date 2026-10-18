@@ -34,8 +34,7 @@ public final class SettingsStore: @unchecked Sendable {
 
   private var observer: NSObjectProtocol?
 
-  private static let logger = Logger(
-    subsystem: Bundle.main.bundleIdentifier ?? "swift-paperless", category: "Settings")
+  private static let logger = Logger(subsystem: AppIdentity.bundleIDPrefix, category: "Settings")
 
   public init(suites: [SettingScope: UserDefaults]) {
     self.suites = suites
