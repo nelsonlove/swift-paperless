@@ -36,16 +36,6 @@ struct ContentHandoverTests {
     let (source, destination, folder) = try scratch()
     defer { try? FileManager.default.removeItem(at: folder) }
     let method = try ContentHandover.place(source, at: destination, clone: { _, _ in errorCode })
-    #expect(method == .copyfile)
-    #expect(try Data(contentsOf: destination) == Data(contentsOf: source))
-  }
-
-  @Test("When copyfile fails too, FileManager copies")
-  func lastResort() throws {
-    let (source, destination, folder) = try scratch()
-    defer { try? FileManager.default.removeItem(at: folder) }
-    let method = try ContentHandover.place(
-      source, at: destination, clone: { _, _ in EXDEV }, copyFile: { _, _ in EIO })
     #expect(method == .copy)
     #expect(try Data(contentsOf: destination) == Data(contentsOf: source))
   }
@@ -58,5 +48,33 @@ struct ContentHandoverTests {
       try ContentHandover.place(source, at: destination, clone: { _, _ in ENOENT })
     }
     #expect(!FileManager.default.fileExists(atPath: destination.path))
+  }
+
+  @Test("A failed copy leaves nothing behind")
+  func failedCopyThrows() throws {
+    let (source, destination, folder) = try scratch()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    try FileManager.default.removeItem(at: source)
+    #expect(throws: (any Error).self) {
+      try ContentHandover.place(source, at: destination, clone: { _, _ in EXDEV })
+    }
+    #expect(!FileManager.default.fileExists(atPath: destination.path))
+  }
+}
+
+@Suite
+struct NotFoundAnswerTests {
+  @Test("Only the download's own 404, for a document gone from the database, is noSuchItem")
+  func answers() {
+    #expect(
+      NotFoundAnswer.answer(source: .documentDownload, documentInDatabase: false) == .noSuchItem)
+    #expect(
+      NotFoundAnswer.answer(source: .documentDownload, documentInDatabase: true)
+        == .serverUnreachable)
+    #expect(
+      NotFoundAnswer.answer(source: .documentDownload, documentInDatabase: nil)
+        == .serverUnreachable)
+    // A 404 from building the repository (the version probe) never deletes.
+    #expect(NotFoundAnswer.answer(source: .other, documentInDatabase: false) == .serverUnreachable)
   }
 }

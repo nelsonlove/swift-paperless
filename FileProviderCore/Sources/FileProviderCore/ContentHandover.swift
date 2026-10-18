@@ -21,39 +21,32 @@ public enum ContentHandover {
   public enum Method: String, Equatable, Sendable {
     /// clonefile(2).
     case clone
-    /// copyfile(3) with COPYFILE_CLONE, which clones when it can and else
-    /// copies the bytes.
-    case copyfile
-    /// `FileManager.copyItem`, the last resort.
+    /// `FileManager.copyItem`.
     case copy
   }
 
-  /// The clonefile(2) errors after which a copy is tried; any other error
+  /// The clonefile(2) errors after which the file is copied; any other error
   /// (a missing source, a full disk) is the answer.
   public static let fallbackErrors: Set<Int32> = [EXDEV, ENOTSUP, EPERM]
 
-  /// Clones `source` to `destination`, falling back to a copy when the clone
-  /// fails with one of ``fallbackErrors``.
+  /// Clones `source` to `destination`, or copies it when the clone fails with
+  /// one of ``fallbackErrors``.
   ///
-  /// - Parameters:
-  ///   - clone: clonefile(2); tests pass one that fails.
-  ///   - copyFile: copyfile(3) with COPYFILE_CLONE; returns 0 or an errno.
+  /// - Parameter clone: clonefile(2), returning 0 or an errno; tests pass one
+  ///   that fails.
   /// - Returns: how the file was placed.
   /// - Throws: a `POSIXError` when the clone fails with another error, or the
-  ///   error of the last copy.
+  ///   copy's error.
   @discardableResult
   public static func place(
     _ source: URL, at destination: URL,
-    clone: (String, String) -> Int32 = ContentHandover.clonefile,
-    copyFile: (String, String) -> Int32 = ContentHandover.copyfileClone
+    clone: (String, String) -> Int32 = ContentHandover.clonefile
   ) throws -> Method {
     let cloneResult = clone(source.path, destination.path)
     if cloneResult == 0 { return .clone }
     guard fallbackErrors.contains(cloneResult) else {
       throw POSIXError(POSIXErrorCode(rawValue: cloneResult) ?? .EIO)
     }
-    try? FileManager.default.removeItem(at: destination)
-    if copyFile(source.path, destination.path) == 0 { return .copyfile }
     try? FileManager.default.removeItem(at: destination)
     do {
       try FileManager.default.copyItem(at: source, to: destination)
@@ -67,11 +60,5 @@ public enum ContentHandover {
   /// clonefile(2): 0, or the errno it set.
   public static func clonefile(_ source: String, _ destination: String) -> Int32 {
     Darwin.clonefile(source, destination, 0) == 0 ? 0 : errno
-  }
-
-  /// copyfile(3) with COPYFILE_CLONE ("if cloning fails, fall back to a
-  /// copy"): 0, or the errno it set.
-  public static func copyfileClone(_ source: String, _ destination: String) -> Int32 {
-    copyfile(source, destination, nil, copyfile_flags_t(COPYFILE_CLONE)) == 0 ? 0 : errno
   }
 }
