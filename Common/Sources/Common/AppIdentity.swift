@@ -11,10 +11,10 @@ import os
 /// Both come from `Config/Shared/Identity.xcconfig` (or a developer's
 /// `Local.xcconfig`) through two Info.plist keys that the app and every
 /// extension carry, so a fork signed under another team needs no source
-/// change. A process without a bundle id (the SwiftPM test runner on the host)
-/// gets the upstream values silently; a real bundle without the keys is a
-/// build error, which is logged (and asserted in Debug) before the same
-/// fallback.
+/// change. A process that is not the app or one of its extensions (a test
+/// runner, a SwiftUI preview host) gets the upstream values silently; an app or
+/// extension bundle without the keys is a build error, which is logged (and
+/// asserted in Debug) before the same fallback.
 public enum AppIdentity {
   /// The upstream values. They must equal `Config/Shared/Identity.xcconfig`;
   /// `AppIdentityTests` checks it.
@@ -31,15 +31,26 @@ public enum AppIdentity {
   /// The shared app group, as in the `.entitlements` files.
   public static let appGroup = resolve("SWPAppGroupIdentifier", default: defaultAppGroup)
 
-  /// The Info.plist value for `key`, or `fallback`. A bundle with an id but
+  /// The Info.plist value for `key`, or `fallback`. An app or extension bundle
   /// without a usable value calls `onMissing` first.
   static func resolve(
     _ key: String, default fallback: String, bundle: Bundle = .main,
     onMissing: (String) -> Void = reportMissing
   ) -> String {
     if let value = infoValue(key, bundle: bundle) { return value }
-    if bundle.bundleIdentifier != nil { onMissing(key) }
+    if isAppOrExtension(bundleURL: bundle.bundleURL, bundleIdentifier: bundle.bundleIdentifier) {
+      onMissing(key)
+    }
     return fallback
+  }
+
+  /// Whether a bundle is the app or one of its extensions, which must carry the
+  /// keys: an `.app` or `.appex` that is not one of Apple's hosts (such as the
+  /// SwiftUI preview agent). Test runners (`xctest`, `swiftpm-testing-helper`)
+  /// and other tools are not.
+  static func isAppOrExtension(bundleURL: URL, bundleIdentifier: String?) -> Bool {
+    guard ["app", "appex"].contains(bundleURL.pathExtension) else { return false }
+    return !(bundleIdentifier ?? "").hasPrefix("com.apple.")
   }
 
   /// Logs a missing or unexpanded key and stops a Debug build. Its own logger:
@@ -53,7 +64,7 @@ public enum AppIdentity {
   /// A non-empty, fully expanded Info.plist string, or `nil`.
   static func infoValue(_ key: String, bundle: Bundle = .main) -> String? {
     guard let value = bundle.object(forInfoDictionaryKey: key) as? String,
-      !value.isEmpty, !value.contains("$(")
+      !value.isEmpty, !value.contains("$("), !value.contains("${")
     else { return nil }
     return value
   }
