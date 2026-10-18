@@ -308,8 +308,7 @@ extension LibraryTree {
     let served = FileNaming.servedContent(for: document, requested: content)
     let versionID = document.currentVersionID
     guard let current = document.versions.first(where: { $0.id == versionID }) else {
-      let modified = document.modified.map { String($0.timeIntervalSinceReferenceDate) } ?? "-"
-      return "\(served.rawValue):\(versionID)@\(modified)"
+      return "\(served.rawValue):\(versionID)@\(modifiedStamp(of: document))"
     }
     var version = "\(served.rawValue):v\(versionID)"
     if let checksum = current.checksum, !checksum.isEmpty {
@@ -320,8 +319,13 @@ extension LibraryTree {
 
   /// A document's dates (``TreeItem/dates``): created and `modified`.
   public static func dates(of document: Document) -> String {
-    let modified = document.modified.map { String($0.timeIntervalSinceReferenceDate) } ?? "-"
-    return "\(document.created.timeIntervalSinceReferenceDate)/\(modified)"
+    "\(document.created.timeIntervalSinceReferenceDate)/\(modifiedStamp(of: document))"
+  }
+
+  /// A document's `modified` as the versions carry it: seconds since the
+  /// reference date, or "-" when the document has none.
+  static func modifiedStamp(of document: Document) -> String {
+    document.modified.map { String($0.timeIntervalSinceReferenceDate) } ?? "-"
   }
 
   private struct Node {
