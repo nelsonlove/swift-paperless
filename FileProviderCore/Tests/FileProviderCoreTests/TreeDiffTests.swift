@@ -251,6 +251,63 @@ struct TreeDiffTests {
     #expect(clashed)
   }
 
+  @Test("The diff has three runs: safe deletions, updates, other deletions")
+  func runs() {
+    // Acme's documents are deleted (a safe deletion of its folders), and
+    // City Library's only document moves to Northwind (an unsafe deletion).
+    var changed = Fixtures.documents.filter { $0.correspondent != 1 }
+    changed[changed.firstIndex { $0.id == 12 }!].correspondent = 2
+    let diff = TreeDiff(
+      from: Fixtures.tree().snapshot(), to: Fixtures.tree(documents: changed).snapshot())
+    #expect(diff.runs.count == 3)
+    #expect(diff.changes == diff.runs.flatMap { $0 })
+
+    let isDelete: (TreeDiff.Change) -> Bool = {
+      if case .delete = $0 { true } else { false }
+    }
+    #expect(diff.runs[0].allSatisfy(isDelete))
+    #expect(diff.runs[1].allSatisfy { !isDelete($0) })
+    #expect(diff.runs[2].allSatisfy(isDelete))
+    #expect(diff.runs[0].contains(.delete(.folder(.correspondent(1)))))
+    #expect(diff.runs[0].contains(.delete(.document(10))))
+    #expect(diff.runs[1].contains(.update(.document(12))))
+    #expect(diff.runs[2].contains(.delete(.folder(.correspondent(3)))))
+
+    // No change: three empty runs.
+    let none = TreeDiff(from: Fixtures.tree().snapshot(), to: Fixtures.tree().snapshot())
+    #expect(none.runs == [[], [], []])
+    #expect(none.isEmpty)
+  }
+
+  @Test("Documented limit: an unsafe deletion can briefly share a name with a new sibling")
+  func unsafeDeletionNameOverlap() {
+    // Layout switch from correspondent to year with a correspondent named
+    // "2026": the year folder "2026" arrives while the correspondent folder
+    // "2026" still holds documents moving out.
+    var correspondents = Fixtures.correspondents
+    correspondents[0].name = "2026"
+    let settingsBefore = FileProviderSettings(layout: .correspondent, browseFolders: [])
+    let settingsAfter = FileProviderSettings(layout: .year, browseFolders: [])
+    func tree(_ settings: FileProviderSettings) -> LibraryTree {
+      LibraryTree(
+        documents: Fixtures.documents, tags: [], correspondents: correspondents,
+        documentTypes: [], settings: settings)
+    }
+    let old = tree(settingsBefore).snapshot()
+    let new = tree(settingsAfter).snapshot()
+    let diff = TreeDiff(from: old, to: new)
+    #expect(diff.runs[2].contains(.delete(.folder(.correspondent(1)))))
+
+    var state = old
+    var overlapped = false
+    for change in diff.changes {
+      state = replay([change], on: state, new: new)
+      if !siblingClashes(state).isEmpty { overlapped = true }
+    }
+    #expect(overlapped)
+    #expect(state == new)
+  }
+
   @Test("Snapshots survive a JSON round trip")
   func snapshotCodable() throws {
     let snapshot = Fixtures.tree().snapshot()
