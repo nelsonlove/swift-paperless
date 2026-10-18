@@ -21,6 +21,10 @@
       guard MockLibrary.isRequested() else { return }
       Logger.shared.notice("Seeding the mock library (\(MockLibrary.launchArgument, privacy: .public))")
 
+      // The list opens with the saved filter; forget it so the app asks for the
+      // default list the seed writes.
+      FilterModel.clearSavedFilterState()
+
       do {
         let report = try await MockLibrary.seed(
           database: stack.database,
@@ -28,7 +32,7 @@
           fileIndex: stack.contentReclaimer,
           archiveURL: { Bundle.main.url(forResource: $0, withExtension: "pdf") })
         Logger.shared.notice(
-          "Mock library seeded: \(report.documents, privacy: .public) documents, \(report.storedFiles, privacy: .public) files stored, \(report.keptFiles, privacy: .public) kept, \(report.removedDocuments, privacy: .public) removed, missing \(report.missingFiles, privacy: .public)"
+          "Mock library seeded: \(report.documents, privacy: .public) documents, \(report.storedFiles, privacy: .public) files stored, \(report.keptFiles, privacy: .public) kept, \(report.removedDocuments, privacy: .public) removed, list written \(report.listWritten, privacy: .public), missing \(report.missingFiles, privacy: .public), unindexed \(report.unindexedFiles, privacy: .public)"
         )
       } catch {
         Logger.shared.error("Seeding the mock library failed: \(error)")
@@ -43,20 +47,18 @@
         Logger.shared.warning("Storing the mock library's token failed, continuing: \(error)")
       }
 
-      // Not through `login`: its connection-change event would start a second
-      // `refreshConnection` beside the one the launch task runs next. Wait for
-      // the manager's observer to hold the row, then point at it, so the
-      // pointer never names a server the manager does not have.
-      let manager = stack.connectionManager
-      let deadline = ContinuousClock.now + .seconds(3)
-      while manager.connections[MockLibrary.serverID] == nil, ContinuousClock.now < deadline {
-        try? await Task.sleep(for: .milliseconds(20))
+      // The row as the seed left it, with the settings it kept. Made active
+      // without the connection-change event: the launch task's own
+      // `refreshConnection` runs next and must be the only one.
+      do {
+        guard let record = try stack.database.connection(id: MockLibrary.serverID) else {
+          Logger.shared.error("The mock library's server row is missing after the seed")
+          return
+        }
+        stack.connectionManager.activateSeededConnection(StoredConnection(record: record))
+      } catch {
+        Logger.shared.error("Reading the mock library's server row failed: \(error)")
       }
-      guard manager.connections[MockLibrary.serverID] != nil else {
-        Logger.shared.error("The connection manager never saw the mock library's server row")
-        return
-      }
-      manager.activeConnectionId = MockLibrary.serverID
     }
   }
 

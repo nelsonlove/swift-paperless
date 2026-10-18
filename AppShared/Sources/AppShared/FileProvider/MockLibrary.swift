@@ -38,8 +38,9 @@
     // MARK: - Server
 
     public static let serverID = UUID(uuidString: "6D0C4B1E-5EED-4A11-8000-00000000C0DE")!
-    /// A reserved name that never resolves (RFC 2606), so no request, and no
-    /// token, ever leaves the device.
+    /// A reserved name that never resolves (RFC 2606). A DNS lookup still
+    /// happens, but every request fails at once with no data or token sent, and
+    /// the app shows its offline / unreachable handling.
     public static let url = URL(string: "https://paperless.invalid/")!
     public static let friendlyName = "Mock Paperless"
     public static let user = User(id: 1, isSuperUser: true, username: "demo")
@@ -206,23 +207,19 @@
     public struct Report: Sendable, Equatable {
       public var documents = 0
       public var removedDocuments = 0
+      /// Whether the default list was written and stamped complete.
+      public var listWritten = false
       public var storedFiles = 0
       /// Files already fresh in the index, left in place.
       public var keptFiles = 0
       public var missingFiles: [String] = []
+      /// Files stored but not indexed, and removed again.
+      public var unindexedFiles: [String] = []
     }
 
-    /// The filter the seeded list is stored under, and its sort. The app's
-    /// default list when its default sort is one the seed can order by;
-    /// otherwise the default pinned to newest added first, so that the key and
-    /// the order always agree.
-    static var listFilter: FilterState {
-      var filter = FilterState.default
-      if order(filter.resolvedSorting) == nil {
-        filter.sorting = FilterState.Sorting(field: .added, order: .descending)
-      }
-      return filter
-    }
+    /// The filter the app's document list opens with on a mock run: the
+    /// default, once the seeder has cleared the saved filter state.
+    static var listFilter: FilterState { .default }
 
     /// `documents` in the order `sorting` asks for, or `nil` for a sort field
     /// the seed does not order by. Ties break on the id.
@@ -251,15 +248,17 @@
     /// them is a cache hit.
     ///
     /// Idempotent: the rows are upserted by fixed ids, the element tables and
-    /// the seeded list are replaced, documents of this server that are not in
+    /// the default list are replaced, documents of this server that are not in
     /// the fixtures are deleted, and a file already fresh in the index is left
     /// alone. On an existing server row only the fields the fixture owns are
     /// rewritten; the offline mode, cellular sync, identity and extra headers
     /// the user set are kept.
     ///
     /// Not one transaction (the cache tables are written through their own
-    /// accessors), so a step that throws removes the server row, which cascades
-    /// to every cache row of it; the next seed starts again from nothing.
+    /// accessors). When a step throws on a first seed, the server row this run
+    /// created is removed, which cascades to every cache row of it, and the
+    /// files this run stored are removed with it. A failed re-seed keeps the
+    /// existing row and its settings.
     ///
     /// - Parameter archiveURL: where the PDF named by a fixture's
     ///   `resourceName` is; `nil` skips that file and reports it missing.
@@ -270,18 +269,28 @@
       fileIndex: (any FileIndex)?,
       archiveURL: @Sendable (String) -> URL?
     ) async throws -> Report {
+      let existing = try database.connection(id: serverID)
       // The cache rows FK-reference the server row, so it goes first.
-      try database.upsertConnection(serverRecord(existing: try database.connection(id: serverID)))
+      try database.upsertConnection(serverRecord(existing: existing))
+      var stored: [ContentStore.Key] = []
       do {
         return try await seedContent(
           database: database, contentStore: contentStore, fileIndex: fileIndex,
-          archiveURL: archiveURL)
+          archiveURL: archiveURL, stored: &stored)
       } catch {
+        guard existing == nil else {
+          Logger.shared.error("Mock library re-seed failed, keeping its server row: \(error)")
+          throw error
+        }
         Logger.shared.error("Mock library seed failed, removing its server row: \(error)")
         do {
           try database.deleteConnection(id: serverID)
         } catch {
           Logger.shared.error("Removing the mock library's server row failed: \(error)")
+        }
+        // Their index rows went with the server row.
+        for key in stored {
+          try? contentStore?.delete(key)
         }
         throw error
       }
@@ -304,7 +313,8 @@
       database: Database,
       contentStore: ContentStore?,
       fileIndex: (any FileIndex)?,
-      archiveURL: @Sendable (String) -> URL?
+      archiveURL: @Sendable (String) -> URL?,
+      stored: inout [ContentStore.Key]
     ) async throws -> Report {
       var report = Report()
 
@@ -321,17 +331,31 @@
       try await database.deleteDocuments(serverID: serverID, removedIDs: stale.sorted())
       report.removedDocuments = stale.count
 
-      // The list write upserts the document rows too. Stored as complete, so
-      // the app shows the documents before any sync and does not refill.
+      // The default list, under the key the app opens with, so the app shows
+      // the documents before any sync and does not refill. Its write upserts
+      // the document rows too. With a default sort the seed cannot reproduce,
+      // the rows are written without a list rather than under a wrong order.
       let filter = listFilter
-      let ordered = order(filter.resolvedSorting) ?? documents
-      let queryKey = QueryKey(serverID: serverID, filter: filter)
-      let basis = try await database.queryWriteBasis(queryKey: queryKey, serverID: serverID)
-      try await database.replaceQueryPage(
-        queryKey: queryKey, serverID: serverID, documents: ordered,
-        totalCount: UInt(ordered.count), basis: basis)
-      try await database.markQueryFillComplete(queryKey: queryKey, serverID: serverID)
-      report.documents = ordered.count
+      if let ordered = order(filter.resolvedSorting) {
+        let queryKey = QueryKey(serverID: serverID, filter: filter)
+        let basis = try await database.queryWriteBasis(queryKey: queryKey, serverID: serverID)
+        report.listWritten = try await database.replaceQueryPage(
+          queryKey: queryKey, serverID: serverID, documents: ordered,
+          totalCount: UInt(ordered.count), basis: basis)
+        if report.listWritten {
+          try await database.markQueryFillComplete(queryKey: queryKey, serverID: serverID)
+        } else {
+          Logger.shared.warning("Mock library list write was superseded; not marked complete")
+        }
+      } else {
+        Logger.shared.warning(
+          "Mock library cannot order by the default sort \(String(describing: filter.resolvedSorting.field)); no list written"
+        )
+      }
+      if !report.listWritten {
+        try await database.upsertDocuments(documents, serverID: serverID)
+      }
+      report.documents = documents.count
 
       guard let contentStore else {
         report.missingFiles = archiveFixtures.map(\.resourceName)
@@ -347,9 +371,9 @@
         }
         let key = ContentStore.Key(
           serverID: serverID, versionID: document.currentVersionID, kind: .archive)
-        if let fileIndex, try await fileIndex.isFresh(key, modified: modified),
-          contentStore.exists(key)
-        {
+        // A failed lookup is a miss, as on the download path.
+        let fresh = (try? await fileIndex?.isFresh(key, modified: modified)) ?? false
+        if fresh, contentStore.exists(key) {
           report.keptFiles += 1
           continue
         }
@@ -363,10 +387,25 @@
           try? FileManager.default.removeItem(at: temp)
           throw error
         }
-        try await fileIndex?.recordStore(
-          key, documentID: document.id, size: contentStore.size(of: key) ?? 0,
-          modified: modified, checksum: nil, storedAt: Date())
-        report.storedFiles += 1
+        guard let fileIndex else {
+          stored.append(key)
+          report.storedFiles += 1
+          continue
+        }
+        do {
+          try await fileIndex.recordStore(
+            key, documentID: document.id, size: contentStore.size(of: key) ?? 0,
+            modified: modified, checksum: nil, storedAt: Date())
+          stored.append(key)
+          report.storedFiles += 1
+        } catch {
+          // An unindexed file is never a hit and the walk would remove it.
+          Logger.shared.error(
+            "Indexing the mock library's \(fixture.resourceName, privacy: .public) failed, removing it: \(error)"
+          )
+          try? contentStore.delete(key)
+          report.unindexedFiles.append(fixture.resourceName)
+        }
       }
       return report
     }

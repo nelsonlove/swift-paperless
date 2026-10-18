@@ -517,6 +517,17 @@ public final class ConnectionManager {
     setActiveConnection(id: connection.id, animated: false)
   }
 
+  #if DEBUG
+    /// Debug seam for the mock library: make a connection whose row is already
+    /// in the database the active one, eagerly like ``login(_:)`` so the next
+    /// synchronous read sees it, but without the connection-change event, so
+    /// the caller's own refresh is the only one.
+    public func activateSeededConnection(_ connection: StoredConnection) {
+      connections[connection.id] = connection
+      activeConnectionId = connection.id
+    }
+  #endif
+
   public func setExtraHeaders(_ headers: [Connection.HeaderValue]) {
     guard let activeConnectionId, var stored = connections[activeConnectionId] else {
       Logger.api.warning("Tried to set extra headers but have no active connection (?)")

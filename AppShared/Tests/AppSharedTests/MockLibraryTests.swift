@@ -84,6 +84,8 @@
         #expect(report.storedFiles == (run == 0 ? 3 : 0))
         #expect(report.keptFiles == (run == 0 ? 0 : 3))
         #expect(report.missingFiles.isEmpty)
+        #expect(report.unindexedFiles.isEmpty)
+        #expect(report.listWritten)
       }
 
       let connections = try database.allConnections()
@@ -166,6 +168,84 @@
       #expect(
         try await fixture.database.elements(TagRecord.self, serverID: MockLibrary.serverID)
           .isEmpty)
+    }
+
+    @Test("A failed re-seed keeps the existing server row and its settings")
+    func failedReseedKeepsServer() async throws {
+      let fixture = try Self.makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      try await MockLibrary.seed(
+        database: fixture.database, contentStore: nil, fileIndex: nil, archiveURL: { _ in nil })
+      var record = try #require(try fixture.database.connection(id: MockLibrary.serverID))
+      record.syncOverCellular = true
+      try fixture.database.upsertConnection(record)
+      let missing = fixture.root.appendingPathComponent("no-such.pdf")
+
+      await #expect(throws: (any Error).self) {
+        try await MockLibrary.seed(
+          database: fixture.database, contentStore: fixture.store,
+          fileIndex: fixture.reclaimer, archiveURL: { _ in missing })
+      }
+
+      let after = try #require(try fixture.database.connection(id: MockLibrary.serverID))
+      #expect(after.syncOverCellular)
+      #expect(try await fixture.database.documentCount(serverID: MockLibrary.serverID) == 15)
+    }
+
+    /// An index whose every call fails.
+    struct FailingFileIndex: FileIndex {
+      struct Failure: Error {}
+      func isFresh(_ key: ContentStore.Key, modified: Date) async throws -> Bool { throw Failure() }
+      func storedChecksum(_ key: ContentStore.Key) async throws -> String? { throw Failure() }
+      func recordStore(
+        _ key: ContentStore.Key, documentID: UInt, size: Int64, modified: Date?,
+        checksum: String?, storedAt: Date
+      ) async throws { throw Failure() }
+      func recordAccess(_ key: ContentStore.Key, at date: Date) async throws { throw Failure() }
+      func forget(_ key: ContentStore.Key) async throws { throw Failure() }
+    }
+
+    @Test("A failing index is a miss and a failed record removes the file, without failing the seed")
+    func failingIndexIsNotFatal() async throws {
+      let fixture = try Self.makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+      let report = try await MockLibrary.seed(
+        database: fixture.database, contentStore: fixture.store, fileIndex: FailingFileIndex(),
+        archiveURL: Self.pdf)
+
+      #expect(report.storedFiles == 0)
+      #expect(report.keptFiles == 0)
+      #expect(report.unindexedFiles.sorted() == ["invoice", "japan", "street"])
+      #expect(fixture.store.inventory().isEmpty)
+      #expect(try fixture.database.connection(id: MockLibrary.serverID) != nil)
+    }
+
+    @Test("The seeded server becomes active without a connection-change event")
+    @MainActor
+    func activateSeededConnection() async throws {
+      let fixture = try Self.makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      try await MockLibrary.seed(
+        database: fixture.database, contentStore: nil, fileIndex: nil, archiveURL: { _ in nil })
+      let manager = ConnectionManager(database: fixture.database, previewMode: false)
+      let record = try #require(try fixture.database.connection(id: MockLibrary.serverID))
+      let events = manager.events.subscribe()
+
+      manager.activateSeededConnection(StoredConnection(record: record))
+      // A sentinel: the first event seen must be it, not a connection change.
+      manager.events.emit(.logout)
+      // Ends the stream after what is buffered, so the read below cannot hang.
+      manager.events.finishAll()
+
+      #expect(manager.activeConnectionId == MockLibrary.serverID)
+      #expect(manager.storedConnection?.id == MockLibrary.serverID)
+      var iterator = events.makeAsyncIterator()
+      let first = await iterator.next()
+      if case .logout = first {
+      } else {
+        Issue.record("expected no event before the sentinel, got \(String(describing: first))")
+      }
     }
 
     @Test("Seeding keeps what the user set on the mock server")

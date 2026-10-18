@@ -53,6 +53,15 @@ public final class FilterModel {
     }
   }
 
+  #if DEBUG
+    /// Debug seam for the mock library: forget the saved filter, so the next
+    /// document list opens with the default one.
+    public nonisolated static func clearSavedFilterState() {
+      UserDefaults(suiteName: "group.com.paulgessinger.swift-paperless")?.removeObject(
+        forKey: "GlobalFilterState")
+    }
+  #endif
+
   public var filterState: FilterState = FilterModel.restoredFilterState()
   {
     didSet {
