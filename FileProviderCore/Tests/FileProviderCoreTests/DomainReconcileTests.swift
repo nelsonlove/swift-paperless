@@ -138,8 +138,49 @@ struct DomainReconcileTests {
     let longer = DomainReconcile.reconcile(
       servers: [Server(identifier: "a", displayName: "Office (new)")], domains: ["a": "Office"])
     #expect(longer.renameInPlace == [Domain(identifier: "a", displayName: "Office (new)")])
+    let other = DomainReconcile.reconcile(
+      servers: [Server(identifier: "a", displayName: "Archive")], domains: ["a": "Office"])
+    #expect(other.renameInPlace == [Domain(identifier: "a", displayName: "Archive")])
+    // Known limit, documented: a change that only drops a trailing
+    // parenthesized part looks like a derived name and keeps the domain name.
     let shorter = DomainReconcile.reconcile(
       servers: [Server(identifier: "a", displayName: "Office")], domains: ["a": "Office (new)"])
-    #expect(shorter.renameInPlace == [Domain(identifier: "a", displayName: "Office")])
+    #expect(shorter.isEmpty)
+  }
+
+  @Test("A change of user name alone keeps the domain name")
+  func userNameChange() {
+    let result = DomainReconcile.reconcile(
+      servers: [
+        Server(identifier: "a", displayName: "Paperless", userName: "bob"),
+        Server(identifier: "b", displayName: "Paperless", userName: "carol"),
+      ], domains: ["a": "Paperless (alice)", "b": "Paperless (carol)"])
+    #expect(result.isEmpty)
+  }
+
+  @Test("Of two existing domains with one name, the smaller server id keeps it")
+  func existingClash() {
+    let same = DomainReconcile.reconcile(
+      servers: [
+        Server(identifier: "b", displayName: "Paperless", userName: "home"),
+        Server(identifier: "a", displayName: "Paperless", userName: "office"),
+      ], domains: ["a": "Paperless", "b": "Paperless"])
+    #expect(same.renameInPlace == [Domain(identifier: "b", displayName: "Paperless (home)")])
+    #expect(same.add.isEmpty && same.remove.isEmpty)
+
+    let caseOnly = DomainReconcile.reconcile(
+      servers: [
+        Server(identifier: "a", displayName: "Paperless", userName: "office"),
+        Server(identifier: "b", displayName: "paperless", userName: "home"),
+      ], domains: ["a": "Paperless", "b": "paperless"])
+    #expect(caseOnly.renameInPlace == [Domain(identifier: "b", displayName: "paperless (home)")])
+
+    // Without user names the loser takes its id.
+    let names = DomainReconcile.displayNames(
+      for: [
+        Server(identifier: "0A1B2C3D-1", displayName: "Paperless"),
+        Server(identifier: "9F8E7D6C-2", displayName: "Paperless"),
+      ], existing: ["0A1B2C3D-1": "Paperless", "9F8E7D6C-2": "Paperless"])
+    #expect(names == ["0A1B2C3D-1": "Paperless", "9F8E7D6C-2": "Paperless (9F8E7D6C)"])
   }
 }

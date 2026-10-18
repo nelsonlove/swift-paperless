@@ -66,9 +66,11 @@ public enum DomainReconcile {
   ///   - domains: Existing domain identifier to its current display name.
   /// - Returns: Each list sorted by identifier. `remove` carries the existing
   ///   domain's name; `renameInPlace` carries the new name. A domain is only
-  ///   in `remove` when its server is gone, and only in `renameInPlace` when
-  ///   its own server's display name changed: adding or removing another
-  ///   server never renames an existing domain.
+  ///   in `remove` when its server is gone. It is in `renameInPlace` only
+  ///   when its own server's display name changed, or when it shares its
+  ///   current name with an existing domain of a server with a smaller
+  ///   identifier. Adding or removing another server never renames an
+  ///   existing domain, and neither does a change of user name alone.
   public static func reconcile(servers: [Server], domains: [String: String]) -> Result {
     let names = displayNames(for: servers, existing: domains)
     var result = Result()
@@ -94,11 +96,17 @@ public enum DomainReconcile {
   /// (compared case-insensitively after NFC), so Files never lists two
   /// locations with one name.
   ///
-  /// A server whose existing domain name is its display name, or one this
-  /// function derives from it, keeps that name, so adding or removing another
-  /// server never renames it. Every other server (a new one, or one whose
-  /// display name changed) is named in identifier order with the first free
-  /// name of: its display name, when no other server shares that display
+  /// A server whose existing domain name is its display name, or its display
+  /// name with any parenthesized suffix (so a change of user name alone
+  /// keeps it), keeps that name, so adding or removing another server never
+  /// renames it. Kept names are checked against each other in identifier
+  /// order: of two existing domains with one name (case-insensitively after
+  /// NFC), the server with the smaller identifier keeps it and the other is
+  /// named like a new one. A consequence of accepting any suffix: a display
+  /// name change that only removes a trailing parenthesized part (from
+  /// "Office (new)" to "Office") is not seen as a rename. Every other server
+  /// (a new one, one whose display name changed, or one that lost a clash)
+  /// is named in identifier order with the first free name of: its display name, when no other server shares that display
   /// name; ` (<user name>)` appended; ` (<first 8 characters of the
   /// identifier>)` appended; ` (<identifier>)` appended; then
   /// ` (<identifier> <n>)` for n = 2, 3, and so on. The counter makes every
@@ -117,9 +125,10 @@ public enum DomainReconcile {
     var claimed = Set<String>()
     var pending: [Server] = []
     for server in unique {
-      if let current = existing[server.identifier], isDerived(current, from: server) {
+      if let current = existing[server.identifier], isDerived(current, from: server),
+        claimed.insert(FileNaming.comparisonKey(current)).inserted
+      {
         names[server.identifier] = current
-        claimed.insert(FileNaming.comparisonKey(current))
       } else {
         pending.append(server)
       }
@@ -150,20 +159,14 @@ public enum DomainReconcile {
     return names
   }
 
-  /// Whether `name` is the server's display name or one of the names
-  /// ``displayNames(for:existing:)`` derives from it.
+  /// Whether `name` is the server's display name, or the display name
+  /// followed by ` (<anything>)`: the shape of every name
+  /// ``displayNames(for:existing:)`` derives, whatever the user name was when
+  /// it was made.
   static func isDerived(_ name: String, from server: Server) -> Bool {
     let base = server.displayName
     if name == base { return true }
     let prefix = "\(base) ("
-    guard name.hasPrefix(prefix), name.hasSuffix(")") else { return false }
-    let inner = name.dropFirst(prefix.count).dropLast()
-    if let user = server.userName, !user.isEmpty, inner == user { return true }
-    let identifier = server.identifier
-    if inner == identifier.prefix(8) || inner == identifier { return true }
-    let counterPrefix = "\(identifier) "
-    guard inner.hasPrefix(counterPrefix) else { return false }
-    let counter = inner.dropFirst(counterPrefix.count)
-    return !counter.isEmpty && counter.allSatisfy { $0.isASCII && $0.isNumber }
+    return name.count > prefix.count + 1 && name.hasPrefix(prefix) && name.hasSuffix(")")
   }
 }
