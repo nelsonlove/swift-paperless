@@ -178,6 +178,10 @@ public struct LibraryTree: Sendable {
   /// The year of a document's `created` date, independent of the current
   /// time zone.
   ///
+  /// Exact only for a value that is a local midnight, as a date-only field
+  /// decoded by `DateOnlyCodable` is; for any other instant it is the year of
+  /// that instant shifted by 13.5 hours.
+  ///
   /// `created` is date-only on the server. `DateOnlyCodable` decodes it as
   /// midnight in the time zone current at decode time, and the cache keeps the
   /// absolute `Date`, so reading it with a later zone can land on the

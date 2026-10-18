@@ -120,6 +120,12 @@ struct LibraryTreeTests {
       #expect(LibraryTree.createdYear(localMidnight(2025, 12, 31, offsetHours: offset)) == 2025)
     }
 
+    // Outside the window the year is knowingly wrong on the boundary days:
+    // 1 January decoded at UTC-11 (American Samoa, Niue) reads as 2 January,
+    // so 31 December reads as the next year.
+    #expect(LibraryTree.createdYear(localMidnight(2025, 12, 31, offsetHours: -11)) == 2026)
+    #expect(LibraryTree.createdYear(localMidnight(2026, 1, 1, offsetHours: -11)) == 2026)
+
     // Kiritimati (+14) is the one populated zone outside the window. It
     // cannot be inside it together with Hawaii: their midnights coincide one
     // calendar day apart, so a rule on the instant must pick one of them.
