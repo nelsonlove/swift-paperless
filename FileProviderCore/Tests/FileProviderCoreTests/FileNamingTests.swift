@@ -29,6 +29,38 @@ struct FileNamingTests {
     #expect(FileNaming.sanitize("Family 👨\u{200D}👩\u{200D}👧") == "Family 👨\u{200D}👩\u{200D}👧")
   }
 
+  @Test("Emoji tag characters of a subdivision flag are kept")
+  func subdivisionFlag() {
+    // 🏴 + TAG g b s c t + CANCEL TAG: the flag of Scotland.
+    let scotland = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}"
+    #expect(FileNaming.sanitize("Trip \(scotland) 2026") == "Trip \(scotland) 2026")
+  }
+
+  @Test("All bidi controls, U+200B and U+FEFF are dropped")
+  func bidiControls() {
+    let controls: [Unicode.Scalar] = [
+      "\u{200E}", "\u{200F}", "\u{202A}", "\u{202B}", "\u{202C}", "\u{202D}", "\u{202E}",
+      "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}", "\u{200B}", "\u{FEFF}", "\u{00AD}",
+    ]
+    for control in controls {
+      #expect(FileNaming.sanitize("Bill\(Character(control))s") == "Bills")
+    }
+  }
+
+  @Test("The result is NFC even when a dropped character split a sequence")
+  func nfcAfterDrops() throws {
+    let name = try #require(FileNaming.sanitize("e\u{200B}\u{0301}"))
+    #expect(name == "\u{E9}")
+    #expect(name.unicodeScalars.map(\.value) == [0xE9])
+  }
+
+  @Test("A leading dot with a combining mark is stripped too")
+  func leadingDotWithMark() {
+    #expect(FileNaming.sanitize(".\u{0301}secret") == "\u{0301}secret")
+    #expect(FileNaming.sanitize(". .\u{0301}. notes")?.unicodeScalars.first != ".")
+    #expect(FileNaming.sanitize(".\u{0301}") == "\u{0301}")
+  }
+
   @Test("Whitespace is trimmed and collapsed; leading dots are removed")
   func trimming() {
     #expect(FileNaming.sanitize("  Water   bill  ") == "Water bill")
@@ -57,6 +89,18 @@ struct FileNamingTests {
       let document = Fixtures.document(42, title)
       #expect(FileNaming.fileName(for: document, content: .archive) == "Document 42.pdf")
     }
+  }
+
+  @Test("The untitled label is sanitized like any other name")
+  func untitledLabelSanitized() {
+    let document = Fixtures.document(7, "")
+    #expect(FileNaming.stem(for: document, untitled: ".Doc/ument\u{202E}") == "Doc-ument 7")
+    #expect(FileNaming.stem(for: document, untitled: "...") == "7")
+    let tree = LibraryTree(
+      documents: [document], tags: [], correspondents: [], documentTypes: [],
+      settings: FileProviderSettings(layout: .flat, browseFolders: []),
+      labels: TreeLabels(untitledDocument: "Scan: page"))
+    #expect(tree.item(for: .document(7))?.name == "Scan- page 7.pdf")
   }
 
   @Test("Long titles are capped by UTF-8 bytes on a character boundary")

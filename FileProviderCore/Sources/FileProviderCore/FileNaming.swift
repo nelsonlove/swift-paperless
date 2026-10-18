@@ -18,24 +18,33 @@ public enum FileNaming {
   /// The extension used for archived documents and as the fallback.
   public static let pdfExtension = "pdf"
 
-  /// U+200C ZERO WIDTH NON-JOINER and U+200D ZERO WIDTH JOINER: format
-  /// characters that are part of emoji sequences and of words in Persian and
-  /// Indic scripts, so ``sanitize(_:)`` keeps them.
-  private static let joiners: Set<Unicode.Scalar> = ["\u{200C}", "\u{200D}"]
+  /// Format characters (general category Cf) that ``sanitize(_:)`` keeps:
+  /// U+200C ZERO WIDTH NON-JOINER and U+200D ZERO WIDTH JOINER, which emoji
+  /// sequences and words in Persian and Indic scripts need, and the emoji tag
+  /// characters U+E0020 to U+E007F, which spell subdivision flags such as
+  /// Scotland's. Every other format character is dropped: the bidi controls
+  /// (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069), U+200B, U+FEFF and
+  /// the rest, which are invisible and can disguise a name.
+  static func keepsFormatCharacter(_ scalar: Unicode.Scalar) -> Bool {
+    switch scalar.value {
+    case 0x200C, 0x200D, 0xE0020...0xE007F: true
+    default: false
+    }
+  }
 
   /// Makes a string safe to use as one path component.
   ///
   /// Replaces `/` and `:` with `-`, replaces control characters and line or
-  /// paragraph separators with a space, drops Unicode format characters
-  /// (except the zero-width joiner and non-joiner, which emoji sequences and
-  /// several scripts need), collapses runs of whitespace, applies
-  /// Unicode NFC, trims whitespace and leading dots (a leading dot hides the
-  /// file), and caps the length at ``maxStemBytes``. Returns `nil` when nothing
-  /// is left.
+  /// paragraph separators with a space, drops format characters except those
+  /// ``keepsFormatCharacter(_:)`` names, collapses runs of whitespace, applies
+  /// Unicode NFC to the result (after the drops, so the name is always NFC),
+  /// trims whitespace and leading dots (a leading dot hides the file; checked
+  /// per Unicode scalar, so a dot followed by a combining mark counts), and
+  /// caps the length at ``maxStemBytes``. Returns `nil` when nothing is left.
   public static func sanitize(_ raw: String) -> String? {
     var scalars = String.UnicodeScalarView()
     var lastWasSpace = false
-    for scalar in raw.precomposedStringWithCanonicalMapping.unicodeScalars {
+    for scalar in raw.unicodeScalars {
       let replacement: Unicode.Scalar
       switch scalar {
       case "/", ":":
@@ -44,9 +53,7 @@ public enum FileNaming {
         switch scalar.properties.generalCategory {
         case .control, .lineSeparator, .paragraphSeparator:
           replacement = " "
-        case .format where !joiners.contains(scalar):
-          // Invisible format characters (bidi overrides such as U+202E, U+200B,
-          // U+FEFF) can disguise a name, so they are dropped.
+        case .format where !keepsFormatCharacter(scalar):
           continue
         default:
           replacement = scalar.properties.isWhitespace ? " " : scalar
@@ -58,21 +65,37 @@ public enum FileNaming {
       lastWasSpace = isSpace
     }
 
-    var result = String(scalars).trimmingCharacters(in: .whitespaces)
-    while result.hasPrefix(".") {
-      result.removeFirst()
-      result = result.trimmingCharacters(in: .whitespaces)
-    }
-    result = truncate(result, maxBytes: maxStemBytes)
-      .trimmingCharacters(in: .whitespaces)
+    // NFC after the drops: a dropped character between a letter and its
+    // combining mark would otherwise leave them uncomposed.
+    var result = String(scalars).precomposedStringWithCanonicalMapping
+    result = stripLeadingDots(result.trimmingCharacters(in: .whitespaces))
+    result = truncate(result, maxBytes: maxStemBytes).trimmingCharacters(in: .whitespaces)
+    // Removing a leading scalar or cutting at a character boundary keeps NFC;
+    // normalize once more so that holds by construction.
+    result = result.precomposedStringWithCanonicalMapping
     return result.isEmpty ? nil : result
   }
 
+  /// Removes leading `.` scalars and the whitespace after them, repeatedly.
+  /// Works on scalars, not characters, because `.` followed by a combining
+  /// mark is one character that `hasPrefix(".")` does not match.
+  private static func stripLeadingDots(_ string: String) -> String {
+    var scalars = Substring(string).unicodeScalars
+    while scalars.first == "." {
+      scalars.removeFirst()
+      while let first = scalars.first, first.properties.isWhitespace {
+        scalars.removeFirst()
+      }
+    }
+    return String(scalars)
+  }
+
   /// The stem (name without extension) for a document: its sanitized title, or
-  /// `"<untitled> <id>"` when the title sanitizes to nothing. The fallback
-  /// depends only on the id, so it is stable across runs.
+  /// the sanitized `"<untitled> <id>"` when the title sanitizes to nothing
+  /// (just the id if the label sanitizes to nothing too). The fallback depends
+  /// only on the label and the id, so it is stable across runs.
   public static func stem(for document: Document, untitled: String = "Document") -> String {
-    sanitize(document.title) ?? "\(untitled) \(document.id)"
+    sanitize(document.title) ?? sanitize("\(untitled) \(document.id)") ?? String(document.id)
   }
 
   /// The variant the server actually serves for a document. A document with
