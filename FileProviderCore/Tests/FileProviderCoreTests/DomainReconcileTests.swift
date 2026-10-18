@@ -74,8 +74,8 @@ struct DomainReconcileTests {
       Server(identifier: second, displayName: "Paperless", userName: "office"),
       Server(identifier: third, displayName: "Paperless"),
     ])
-    #expect(names[first] == "Paperless (\(first))")
-    #expect(names[second] == "Paperless (\(second))")
+    #expect(names[first] == "Paperless (office)")
+    #expect(names[second] == "Paperless (0A1B2C3D)")
     #expect(names[third] == "Paperless (9F8E7D6C)")
     #expect(Set(names.values.map(FileNaming.comparisonKey)).count == 3)
 
@@ -85,15 +85,53 @@ struct DomainReconcileTests {
     #expect(result.add.map(\.displayName) == ["Home (0A1B2C3D)", "Home (9F8E7D6C)"])
   }
 
-  @Test("A second server with the same name renames the first in place")
-  func newDuplicateRenamesInPlace() {
+  @Test("Names stay distinct when a server is literally named like a generated name")
+  func craftedNames() {
+    let first = "0A1B2C3D-0000-0000-0000-000000000001"
+    let second = "0A1B2C3D-0000-0000-0000-000000000002"
+    let crafted = "00000000-0000-0000-0000-000000000000"
+    let servers = [
+      Server(identifier: first, displayName: "Home"),
+      Server(identifier: second, displayName: "Home"),
+      Server(identifier: crafted, displayName: "Home (\(second))"),
+      Server(identifier: "11111111-0000-0000-0000-000000000000", displayName: "home (0a1b2c3d)"),
+    ]
+    let names = DomainReconcile.displayNames(for: servers)
+    #expect(names.count == 4)
+    #expect(Set(names.values.map(FileNaming.comparisonKey)).count == 4)
+    #expect(names[crafted] == "Home (\(second))")
+    #expect(names[second] == "Home (\(second) 2)")
+  }
+
+  @Test("Adding a server with a shared name never renames the existing domain")
+  func addDoesNotRename() {
     let result = DomainReconcile.reconcile(
       servers: [
         Server(identifier: "a", displayName: "Paperless", userName: "office"),
         Server(identifier: "b", displayName: "Paperless", userName: "home"),
       ], domains: ["a": "Paperless"])
     #expect(result.add == [Domain(identifier: "b", displayName: "Paperless (home)")])
-    #expect(result.renameInPlace == [Domain(identifier: "a", displayName: "Paperless (office)")])
+    #expect(result.renameInPlace.isEmpty)
     #expect(result.remove.isEmpty)
+  }
+
+  @Test("Removing the other server does not rename the remaining one back")
+  func removeDoesNotRenameBack() {
+    let result = DomainReconcile.reconcile(
+      servers: [Server(identifier: "b", displayName: "Paperless", userName: "home")],
+      domains: ["a": "Paperless", "b": "Paperless (home)"])
+    #expect(result.remove == [Domain(identifier: "a", displayName: "Paperless")])
+    #expect(result.renameInPlace.isEmpty)
+    #expect(result.add.isEmpty)
+  }
+
+  @Test("A server's own name change still renames its domain in place, either way")
+  func ownRename() {
+    let longer = DomainReconcile.reconcile(
+      servers: [Server(identifier: "a", displayName: "Office (new)")], domains: ["a": "Office"])
+    #expect(longer.renameInPlace == [Domain(identifier: "a", displayName: "Office (new)")])
+    let shorter = DomainReconcile.reconcile(
+      servers: [Server(identifier: "a", displayName: "Office")], domains: ["a": "Office (new)"])
+    #expect(shorter.renameInPlace == [Domain(identifier: "a", displayName: "Office")])
   }
 }

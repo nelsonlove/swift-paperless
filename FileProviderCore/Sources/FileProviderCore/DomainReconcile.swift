@@ -62,13 +62,32 @@ public enum DomainReconcile {
 
   /// - Parameters:
   ///   - servers: The configured servers. Their domain names come from
-  ///     ``displayNames(for:)``.
+  ///     ``displayNames(for:existing:)``.
   ///   - domains: Existing domain identifier to its current display name.
   /// - Returns: Each list sorted by identifier. `remove` carries the existing
   ///   domain's name; `renameInPlace` carries the new name. A domain is only
-  ///   in `remove` when its server is gone, never because of a rename.
+  ///   in `remove` when its server is gone, and only in `renameInPlace` when
+  ///   its own server's display name changed: adding or removing another
+  ///   server never renames an existing domain.
   public static func reconcile(servers: [Server], domains: [String: String]) -> Result {
-    reconcile(names: displayNames(for: servers), domains: domains)
+    let names = displayNames(for: servers, existing: domains)
+    var result = Result()
+    for (identifier, name) in names {
+      if let existing = domains[identifier] {
+        if existing != name {
+          result.renameInPlace.append(Domain(identifier: identifier, displayName: name))
+        }
+      } else {
+        result.add.append(Domain(identifier: identifier, displayName: name))
+      }
+    }
+    for (identifier, name) in domains where names[identifier] == nil {
+      result.remove.append(Domain(identifier: identifier, displayName: name))
+    }
+    result.add.sort { $0.identifier < $1.identifier }
+    result.remove.sort { $0.identifier < $1.identifier }
+    result.renameInPlace.sort { $0.identifier < $1.identifier }
+    return result
   }
 
   /// The same, for servers given as identifier to display name, with no user
@@ -79,56 +98,80 @@ public enum DomainReconcile {
       domains: domains)
   }
 
-  /// The domain name for each server, distinct across servers (compared
-  /// case-insensitively after NFC), so Files never lists two locations with
-  /// one name. A name shared by several servers gets ` (<user name>)`, or
-  /// ` (<first 8 characters of the identifier>)` when the server has no user
-  /// name; names still shared after that get ` (<full identifier>)`.
-  public static func displayNames(for servers: [Server]) -> [String: String] {
-    func duplicates(_ names: [String: String]) -> Set<String> {
-      let groups = Dictionary(grouping: names, by: { FileNaming.comparisonKey($0.value) })
-      return Set(groups.values.filter { $0.count > 1 }.flatMap { $0.map(\.key) })
-    }
+  /// The domain name for each server, always distinct across servers
+  /// (compared case-insensitively after NFC), so Files never lists two
+  /// locations with one name.
+  ///
+  /// A server whose existing domain name is its display name, or one this
+  /// function derives from it, keeps that name, so adding or removing another
+  /// server never renames it. Every other server (a new one, or one whose
+  /// display name changed) is named in identifier order with the first free
+  /// name of: its display name, when no other server shares that display
+  /// name; ` (<user name>)` appended; ` (<first 8 characters of the
+  /// identifier>)` appended; ` (<identifier>)` appended; then
+  /// ` (<identifier> <n>)` for n = 2, 3, and so on. The counter makes every
+  /// candidate different, so a free name is always found.
+  public static func displayNames(for servers: [Server], existing: [String: String] = [:])
+    -> [String: String]
+  {
+    let unique = Dictionary(
+      servers.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first }
+    ).values.sorted { $0.identifier < $1.identifier }
+    let sharedDisplayNames = Set(
+      Dictionary(grouping: unique, by: { FileNaming.comparisonKey($0.displayName) })
+        .filter { $0.value.count > 1 }.keys)
 
-    var names = Dictionary(
-      servers.map { ($0.identifier, $0.displayName) }, uniquingKeysWith: { first, _ in first })
-    let byID = Dictionary(
-      servers.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first })
-
-    for identifier in duplicates(names) {
-      guard let server = byID[identifier] else { continue }
-      if let user = server.userName, !user.isEmpty {
-        names[identifier] = "\(server.displayName) (\(user))"
+    var names: [String: String] = [:]
+    var claimed = Set<String>()
+    var pending: [Server] = []
+    for server in unique {
+      if let current = existing[server.identifier], isDerived(current, from: server) {
+        names[server.identifier] = current
+        claimed.insert(FileNaming.comparisonKey(current))
       } else {
-        names[identifier] = "\(server.displayName) (\(identifier.prefix(8)))"
+        pending.append(server)
       }
     }
-    for identifier in duplicates(names) {
-      guard let server = byID[identifier] else { continue }
-      names[identifier] = "\(server.displayName) (\(identifier))"
+
+    for server in pending {
+      let base = server.displayName
+      var candidates: [String] = []
+      if !sharedDisplayNames.contains(FileNaming.comparisonKey(base)) {
+        candidates.append(base)
+      }
+      if let user = server.userName, !user.isEmpty {
+        candidates.append("\(base) (\(user))")
+      }
+      candidates.append("\(base) (\(server.identifier.prefix(8)))")
+      candidates.append("\(base) (\(server.identifier))")
+
+      var name = candidates.first { !claimed.contains(FileNaming.comparisonKey($0)) }
+      var counter = 2
+      while name == nil {
+        let candidate = "\(base) (\(server.identifier) \(counter))"
+        if !claimed.contains(FileNaming.comparisonKey(candidate)) { name = candidate }
+        counter += 1
+      }
+      names[server.identifier] = name!
+      claimed.insert(FileNaming.comparisonKey(name!))
     }
     return names
   }
 
-  private static func reconcile(names servers: [String: String], domains: [String: String])
-    -> Result
-  {
-    var result = Result()
-    for (identifier, name) in servers {
-      if let existing = domains[identifier] {
-        if existing != name {
-          result.renameInPlace.append(Domain(identifier: identifier, displayName: name))
-        }
-      } else {
-        result.add.append(Domain(identifier: identifier, displayName: name))
-      }
-    }
-    for (identifier, name) in domains where servers[identifier] == nil {
-      result.remove.append(Domain(identifier: identifier, displayName: name))
-    }
-    result.add.sort { $0.identifier < $1.identifier }
-    result.remove.sort { $0.identifier < $1.identifier }
-    result.renameInPlace.sort { $0.identifier < $1.identifier }
-    return result
+  /// Whether `name` is the server's display name or one of the names
+  /// ``displayNames(for:existing:)`` derives from it.
+  static func isDerived(_ name: String, from server: Server) -> Bool {
+    let base = server.displayName
+    if name == base { return true }
+    let prefix = "\(base) ("
+    guard name.hasPrefix(prefix), name.hasSuffix(")") else { return false }
+    let inner = name.dropFirst(prefix.count).dropLast()
+    if let user = server.userName, !user.isEmpty, inner == user { return true }
+    let identifier = server.identifier
+    if inner == identifier.prefix(8) || inner == identifier { return true }
+    let counterPrefix = "\(identifier) "
+    guard inner.hasPrefix(counterPrefix) else { return false }
+    let counter = inner.dropFirst(counterPrefix.count)
+    return !counter.isEmpty && counter.allSatisfy { $0.isASCII && $0.isNumber }
   }
 }
