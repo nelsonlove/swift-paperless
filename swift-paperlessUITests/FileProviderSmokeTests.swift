@@ -89,6 +89,12 @@ final class FileProviderSmokeTests: XCTestCase {
 
     // 4. Open the location: the canonical folders and the browse folders.
     location.tap()
+    // iOS 26.5 asks to turn a disabled location on when it is opened.
+    let turnOn = element(in: files, labels: ["Turn On", "Turn on"], types: [.button])
+    if isVisible(turnOn, timeout: 5) {
+      snapshot(files, "turn on prompt")
+      turnOn.tap()
+    }
     let acme = element(in: files, labelsStartingWith: [correspondentFolder])
     require(
       acme.waitForExistence(timeout: 60), "No \(correspondentFolder) folder in \(locationName)")
