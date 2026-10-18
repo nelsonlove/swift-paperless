@@ -18,19 +18,15 @@ let package = Package(
   dependencies: [
     .package(path: "../Common"),
     .package(path: "../DataModel"),
-    .package(path: "../Networking"),
   ],
   targets: [
     // Pure rules for the File Provider extension: identifiers, file names, the
-    // folder tree, snapshots and diffs, domain reconciliation, and the answer
-    // to a failed request (Networking's RequestError, read, never sent). No
+    // folder tree, snapshots and diffs, and domain reconciliation. No
     // FileProvider, UIKit or database import, so everything is host-tested.
     .target(
       name: "FileProviderCore",
       dependencies: [
-        .product(name: "Common", package: "Common"),
-        .product(name: "DataModel", package: "DataModel"),
-        .product(name: "Networking", package: "Networking"),
+        .product(name: "DataModel", package: "DataModel")
       ],
       path: "Sources",
       swiftSettings: [
@@ -44,7 +40,6 @@ let package = Package(
         "FileProviderCore",
         .product(name: "Common", package: "Common"),
         .product(name: "DataModel", package: "DataModel"),
-        .product(name: "Networking", package: "Networking"),
       ]
     ),
   ]

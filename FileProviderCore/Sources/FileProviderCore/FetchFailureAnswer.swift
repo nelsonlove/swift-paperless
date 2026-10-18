@@ -3,47 +3,57 @@
 //  FileProviderCore
 //
 
-import Common
-import Networking
+import Foundation
 
-/// What `fetchContents` does when getting a document's content fails, before
-/// the error map (`ErrorAnswer`) decides the rest.
+/// What `fetchContents` does when a step of getting a document's content
+/// fails, before the error map (`ErrorAnswer`) decides the rest.
 ///
 /// The rule:
 /// - a cancellation is NSUserCancelledError (fetchContents, "Cancellations");
-/// - a 403 is NSFileReadNoPermissionError, which the fetchContents "Error
-///   cases" name for content the user may not read, even when a stored copy
-///   exists: the server has withdrawn access;
-/// - any other failure (a 404 from the server or anything between, a 401,
-///   connectivity and timeouts, a 5xx, a certificate or local-network
-///   refusal, a local read that failed) serves the stored copy when there is
-///   one, possibly outdated;
-/// - without a stored copy the error is rethrown, and `ErrorAnswer` maps it.
+/// - a 403 from the document's own download is NSFileReadNoPermissionError,
+///   which the fetchContents "Error cases" name for content the user may not
+///   read, even when a stored copy exists: the server has withdrawn access;
+/// - any other failure serves the stored copy when there is one, possibly
+///   outdated: a 404, a 401, connectivity and timeouts, a 5xx, a certificate
+///   or local-network refusal, a local read that failed, and a 403 from
+///   building the repository (the version probe), which says nothing about
+///   the document;
+/// - without a stored copy the error goes to `ErrorAnswer`.
 ///
-/// No answer here or in `ErrorAnswer` is NSFileProviderErrorNoSuchItem, which
-/// makes the system delete the item (NSFileProviderReplicatedExtension.h,
-/// fetchContents "Error cases"). A 404 never proves a document is gone; a
-/// deleted document leaves Files only through the working-set change diff,
-/// after the app's sync removes its row from the database.
-public enum FetchFailureAnswer<Copy: Sendable>: Sendable {
-  case storedCopy(Copy)
+/// No answer here, and none `ErrorAnswer` gives for a fetch, is
+/// NSFileProviderErrorNoSuchItem, which makes the system delete the item
+/// (NSFileProviderReplicatedExtension.h, fetchContents "Error cases"). A 404
+/// never proves a document is gone; a deleted document leaves Files only
+/// through the working-set change diff, after the app's sync removes its row.
+public enum FetchFailureAnswer: Equatable, Sendable {
+  case storedCopy(URL)
   case cancelled
   case noPermission
-  case rethrow
+  case mapError
 
-  public static func answer(for kind: ErrorAnswer.Kind, storedCopy: Copy?) -> Self {
+  /// The step of the fetch that failed.
+  public enum Step: Equatable, Sendable {
+    /// Reading the server row from the database.
+    case serverRow
+    /// Building the server's repository (it may probe the server's versions).
+    case repository
+    /// The document's own download.
+    case download
+  }
+
+  public static func answer(for kind: ErrorAnswer.Kind, in step: Step, storedCopy: URL?)
+    -> FetchFailureAnswer
+  {
     switch kind {
-    case .cancelled: .cancelled
-    case .forbidden: .noPermission
-    default: storedCopy.map { .storedCopy($0) } ?? .rethrow
+    case .cancelled: return .cancelled
+    case .forbidden where step == .download: return .noPermission
+    default: return storedCopy.map { .storedCopy($0) } ?? .mapError
     }
   }
 }
 
-extension FetchFailureAnswer: Equatable where Copy: Equatable {}
-
 /// The pure part of the extension's error map (`FileProviderErrors.map`): the
-/// File Provider error for each kind of failure. No kind maps to
+/// error to answer for each kind of failure. For a fetch, no kind answers
 /// NSFileProviderErrorNoSuchItem.
 public enum ErrorAnswer: Equatable, Sendable {
   /// NSFileProviderErrorServerUnreachable: "the current state of the system /
@@ -58,43 +68,53 @@ public enum ErrorAnswer: Equatable, Sendable {
   /// NSCocoaErrorDomain NSXPCConnectionReplyInvalid with the original error
   /// under NSUnderlyingErrorKey: a transient error, retried.
   case unrepresentable
+  /// The error as it is: already in NSFileProviderErrorDomain or
+  /// NSCocoaErrorDomain.
+  case passThrough
 
+  /// A failure as the extension classifies it (`FileProviderErrors.kind`).
   public enum Kind: Equatable, Sendable {
+    /// The library cannot be read.
     case libraryUnavailable
+    /// The library was read and does not hold the document.
+    case documentNotInLibrary
     case cancelled
+    /// HTTP 401.
     case unauthorized
+    /// HTTP 403.
     case forbidden
+    /// HTTP 404, from the server or anything between.
     case notFound
+    /// No response: offline, timed out, a certificate or local-network
+    /// refusal.
     case unreachable
+    /// NSFileProviderErrorNoSuchItem, made by a caller.
+    case noSuchItem
+    /// Any other error already in NSFileProviderErrorDomain or
+    /// NSCocoaErrorDomain.
+    case systemError
     case other
 
-    /// The kind of `error` as the networking layer reports it: a status
-    /// code as `RequestError` (a 404 as `unexpectedStatusCode`), a transport
-    /// failure as `RequestError.connectivity` once
-    /// `RequestError.normalizingTransportFailure` has seen it. The extension
-    /// recognises its own `libraryUnavailable` before calling this.
-    public init(classifying error: any Error) {
-      if error.isCancellationError {
-        self = .cancelled
-        return
-      }
-      guard let request = error as? RequestError else {
-        self = .other
-        return
-      }
-      switch request {
-      case .unauthorized: self = .unauthorized
-      case .forbidden: self = .forbidden
-      case .unexpectedStatusCode(let code, _) where code == .notFound: self = .notFound
-      case .connectivity, .localNetworkDenied, .certificate: self = .unreachable
+    /// The kind of an HTTP status the server answered with.
+    public init(httpStatus: Int) {
+      switch httpStatus {
+      case 401: self = .unauthorized
+      case 403: self = .forbidden
+      case 404: self = .notFound
       default: self = .other
       }
     }
   }
 
-  public static func answer(for kind: Kind) -> ErrorAnswer {
+  /// - Parameter inFetch: whether the answer is fetchContents's, which never
+  ///   answers NSFileProviderErrorNoSuchItem; other callers' noSuchItem
+  ///   passes through.
+  public static func answer(for kind: Kind, inFetch: Bool) -> ErrorAnswer {
     switch kind {
-    case .libraryUnavailable, .notFound, .unreachable: .serverUnreachable
+    case .libraryUnavailable, .documentNotInLibrary, .notFound, .unreachable:
+      .serverUnreachable
+    case .noSuchItem: inFetch ? .serverUnreachable : .passThrough
+    case .systemError: .passThrough
     case .cancelled: .cancelled
     case .unauthorized: .notAuthenticated
     case .forbidden: .noPermission
