@@ -6,7 +6,12 @@
 //
 // The app and its extensions read SWP_BUNDLE_ID_PREFIX and SWP_APP_GROUP at run
 // time from their Info.plist (SWPBundleIDPrefix, SWPAppGroupIdentifier); see
-// Common/Sources/Common/AppIdentity.swift.
+// Common/Sources/Common/AppIdentity.swift, whose defaults must equal the values
+// below (a test in CommonTests checks it).
+//
+// Release builds pin these three settings to the values below in
+// scripts/CIArchiveSigning.xcconfig, so an archive never picks up a local
+// identity.
 
 SWP_BUNDLE_ID_PREFIX = com.paulgessinger.swift-paperless
 SWP_APP_GROUP = group.com.paulgessinger.swift-paperless
