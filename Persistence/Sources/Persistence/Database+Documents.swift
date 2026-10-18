@@ -609,6 +609,41 @@ extension Database {
       .fetchSet(db)
   }
 
+  /// A server's cached documents, decoded like `document(serverID:id:)` and
+  /// ordered by id ascending: ids greater than `after` (`nil` starts from the
+  /// beginning), at most `limit` (`nil` means all; `limit` must not be
+  /// negative).
+  ///
+  /// Each call is its own read. Paging with `after: lastPage.last?.id` does not
+  /// see one snapshot: a row inserted below the cursor between two calls is not
+  /// returned, and a row deleted after its page was read stays in the caller's
+  /// result. A caller that needs a consistent view reads again after its own
+  /// change notification. One row that fails to decode fails the whole call.
+  /// With no `limit`, every row is decoded at once; a memory-limited caller
+  /// should page.
+  public func documents(
+    serverID: UUID, after: UInt? = nil, limit: Int? = nil
+  ) async throws -> [Document] {
+    try await wrappingAsync("documents(after:limit:)") {
+      try await writer.read {
+        try Self.fetchDocuments($0, serverID: serverID, after: after, limit: limit)
+      }
+    }
+  }
+
+  private static func fetchDocuments(
+    _ db: GRDB.Database, serverID: UUID, after: UInt?, limit: Int?
+  ) throws -> [Document] {
+    precondition(limit.map { $0 >= 0 } ?? true, "documents(serverID:after:limit:): negative limit")
+    // Ids are stored as Int64; a cursor beyond that range has nothing after it.
+    if let after, after > UInt(Int64.max) { return [] }
+    var request = DocumentRecord.filter(Column("server_id") == serverID)
+    if let after { request = request.filter(Column("id") > after) }
+    request = request.order(Column("id"))
+    if let limit { request = request.limit(limit) }
+    return try request.fetchAll(db).map(\.domain)
+  }
+
   /// Baseline the changed-metadata delta from the cache: store the latest
   /// `modified` among this server's cached documents as its delta watermark and
   /// return it. Returns `nil`, storing nothing, if no cached row has one.
