@@ -60,4 +60,20 @@ struct FileProviderSettingsTests {
     let data = try JSONEncoder().encode(stored)
     #expect(FileProviderSettings.decode(from: data) == stored)
   }
+
+  @Test("Browse folders decode per element; only a missing or non-array value is the default")
+  func browseFoldersPerElement() throws {
+    func decode(_ json: String) throws -> Set<BrowseFolder> {
+      try JSONDecoder().decode(FileProviderSettings.self, from: Data(json.utf8)).browseFolders
+    }
+    #expect(
+      try decode(#"{"browseFolders":["tag",3,null,{"x":1},"shelf","type"]}"#) == [
+        .tag, .documentType,
+      ])
+    #expect(try decode(#"{"browseFolders":[]}"#) == [])
+    #expect(try decode(#"{"browseFolders":[1,2]}"#) == [])
+    #expect(try decode(#"{"browseFolders":"tag"}"#) == Set(BrowseFolder.allCases))
+    #expect(try decode(#"{"browseFolders":null}"#) == Set(BrowseFolder.allCases))
+    #expect(try decode(#"{}"#) == Set(BrowseFolder.allCases))
+  }
 }
