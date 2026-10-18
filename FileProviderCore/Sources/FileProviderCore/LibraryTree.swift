@@ -448,18 +448,20 @@ extension LibraryTree {
     }
 
     private func key(_ id: UInt?) -> String {
-      id.map { String($0) } ?? "none"
+      FolderKey.token(for: id)
     }
 
     // The *Name functions return sanitized stems, each sanitized once.
 
     private func correspondentName(_ id: UInt?) -> String {
-      guard let id else { return FileNaming.sanitize(labels.noCorrespondent) ?? "none" }
+      guard let id else {
+        return FileNaming.sanitize(labels.noCorrespondent) ?? FolderKey.noneToken
+      }
       return named(correspondentsByID[id]?.name, fallback: labels.unknownCorrespondent, id)
     }
 
     private func documentTypeName(_ id: UInt?) -> String {
-      guard let id else { return FileNaming.sanitize(labels.noDocumentType) ?? "none" }
+      guard let id else { return FileNaming.sanitize(labels.noDocumentType) ?? FolderKey.noneToken }
       return named(documentTypesByID[id]?.name, fallback: labels.unknownDocumentType, id)
     }
 

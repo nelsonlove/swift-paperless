@@ -321,6 +321,38 @@ struct LibraryTreeTests {
     #expect(tie == LibraryTree.byID(tieA.reversed(), name: \.name))
   }
 
+  @Test("The none token is the same in identifiers, suffixes and fallback names")
+  func noneTokenShared() {
+    #expect(
+      ItemIdentifier.folder(.correspondent(nil)).stringValue
+        == "dir:correspondent:\(FolderKey.noneToken)")
+    #expect(
+      ItemIdentifier(stringValue: "dir:documentType:\(FolderKey.noneToken)")
+        == .folder(.documentType(nil)))
+
+    // A correspondent named like the "No correspondent" folder: both take a
+    // suffix, the folder's built from the none token.
+    var correspondents = Fixtures.correspondents
+    correspondents.append(Fixtures.correspondent(5, "No correspondent"))
+    let documents = [
+      Fixtures.document(1, "One", correspondent: 5), Fixtures.document(2, "Two"),
+    ]
+    let tree = LibraryTree(
+      documents: documents, tags: [], correspondents: correspondents, documentTypes: [],
+      settings: FileProviderSettings(layout: .correspondent, browseFolders: []))
+    #expect(
+      tree.item(for: .folder(.correspondent(nil)))?.name
+        == "No correspondent (#\(FolderKey.noneToken))")
+    #expect(tree.item(for: .folder(.correspondent(5)))?.name == "No correspondent (#5)")
+
+    // A label that sanitizes to nothing falls back to the token too.
+    let blank = LibraryTree(
+      documents: [Fixtures.document(2, "Two")], tags: [], correspondents: [], documentTypes: [],
+      settings: FileProviderSettings(layout: .correspondent, browseFolders: []),
+      labels: TreeLabels(noCorrespondent: "..."))
+    #expect(blank.item(for: .folder(.correspondent(nil)))?.name == FolderKey.noneToken)
+  }
+
   @Test("document(for:) is nil for an identifier not in the tree")
   func documentLookupConsistent() {
     let tree = Fixtures.tree()

@@ -19,6 +19,17 @@ public enum FolderKey: Hashable, Sendable {
   /// `dir:correspondentYear:<id|none>/<year>` (a year inside it).
   case correspondentYear(correspondent: UInt?, year: Int?)
 
+  /// The text for a missing correspondent or document type, both in folder
+  /// identifiers (`dir:correspondent:none`) and in the tree's collision
+  /// suffixes and fallback names. The one spelling of it.
+  public static let noneToken = "none"
+
+  /// An id as written in identifiers and suffixes: its decimal form, or
+  /// ``noneToken``.
+  public static func token(for id: UInt?) -> String {
+    id.map { String($0) } ?? noneToken
+  }
+
   /// The layout this folder belongs to.
   public var layout: FolderLayout {
     switch self {
@@ -78,7 +89,6 @@ public enum ItemIdentifier: Hashable, Sendable {
 }
 
 extension ItemIdentifier {
-  private static let noneKey = "none"
 
   /// The identifier's string form, as handed to File Provider.
   public var stringValue: String {
@@ -155,7 +165,7 @@ extension ItemIdentifier {
   }
 
   private static func encodeOptional(_ id: UInt?) -> String {
-    id.map { String($0) } ?? noneKey
+    FolderKey.token(for: id)
   }
 
   private static func decodeKey(layout: FolderLayout, _ raw: Substring) -> FolderKey? {
@@ -189,7 +199,7 @@ extension ItemIdentifier {
   }
 
   private static func parseOptionalID(_ raw: Substring) -> OptionalID? {
-    if raw == noneKey { return OptionalID(value: nil) }
+    if raw == FolderKey.noneToken { return OptionalID(value: nil) }
     guard let id = parseID(raw) else { return nil }
     return OptionalID(value: id)
   }
