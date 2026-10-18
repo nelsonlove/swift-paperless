@@ -26,8 +26,7 @@ let package = Package(
     .target(
       name: "FileProviderCore",
       dependencies: [
-        .product(name: "Common", package: "Common"),
-        .product(name: "DataModel", package: "DataModel"),
+        .product(name: "DataModel", package: "DataModel")
       ],
       path: "Sources",
       swiftSettings: [
