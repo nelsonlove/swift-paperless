@@ -35,6 +35,10 @@ struct ItemIdentifierTests {
     (.appearance(.correspondent, folderID: 1, documentID: 10), "corr:1/doc:10"),
     (.appearance(.documentType, folderID: 2, documentID: 12), "type:2/doc:12"),
     (.document(UInt.max), "doc:\(UInt.max)"),
+    (.folder(.year(-1)), "dir:year:-1"),
+    (.folder(.year(0)), "dir:year:0"),
+    (.folder(.year(Int.min)), "dir:year:\(Int.min)"),
+    (.folder(.correspondentYear(correspondent: nil, year: -44)), "dir:correspondentYear:none/-44"),
   ]
 
   @Test("Every identifier encodes to its documented string and decodes back")
@@ -53,7 +57,8 @@ struct ItemIdentifierTests {
       "dir:year:none", "dir:year:02026", "dir:correspondentYear:1/", "dir:correspondentYear:1/x",
       "dir:correspondentYear:1/2026/3", "dir:correspondent", "browse:", "browse:types",
       "tag:", "tag:x", "tag:1/", "tag:1/doc:", "tag:1/dir:2", "tag:1/doc:2/doc:3", "folder:1",
-      "doc:\(UInt.max)0", "doc:١٢",
+      "doc:\(UInt.max)0", "doc:١٢", "dir:year:-0", "dir:year:-", "dir:year:--1",
+      "dir:year:-01", "dir:year:+1", "doc:-0",
     ])
   func rejects(_ raw: String) {
     #expect(ItemIdentifier(rawValue: raw) == nil)

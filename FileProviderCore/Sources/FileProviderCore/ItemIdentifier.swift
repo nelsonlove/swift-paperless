@@ -187,8 +187,11 @@ extension ItemIdentifier: RawRepresentable {
     return OptionalID(value: id)
   }
 
+  /// A year may be negative (a `created` date before year 1), so an optional
+  /// leading `-` is accepted; `-0` is not, since `String(0)` is `0`.
   private static func parseYear(_ raw: Substring) -> Int? {
-    guard isCanonicalDecimal(raw) else { return nil }
+    let digits = raw.hasPrefix("-") ? raw.dropFirst() : raw
+    guard isCanonicalDecimal(digits), raw != "-0" else { return nil }
     return Int(raw)
   }
 
