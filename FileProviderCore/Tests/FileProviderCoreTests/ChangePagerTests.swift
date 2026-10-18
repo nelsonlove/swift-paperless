@@ -252,3 +252,89 @@ struct SnapshotMetadataTests {
     #expect(try JSONDecoder().decode(TreeSnapshot.self, from: data) == snapshot)
   }
 }
+
+@Suite
+struct ChangePagerBatchTests {
+  /// Every page from the state's anchor until the system is up to date.
+  private func drain(
+    _ state: ChangeState, to current: TreeSnapshot, batchSize: Int
+  ) throws -> [ChangePager.Page] {
+    var pages: [ChangePager.Page] = []
+    var state = state
+    var anchor = state.anchor
+    while true {
+      let page = try ChangePager.nextPage(
+        state: state, from: anchor, current: current, batchSize: batchSize)
+      if page.run.isEmpty { break }
+      pages.append(page)
+      #expect(page.run.count <= batchSize)
+      state = page.state
+      anchor = page.anchor
+      #expect(pages.count < 1000)
+    }
+    return pages
+  }
+
+  @Test("A run larger than the batch is sent in order across calls, exactly once")
+  func largeRunInBatches() throws {
+    let new = Fixtures.tree().snapshot()
+    let state = ChangePager.initialState(current: TreeSnapshot(), epoch: "e")
+    let diff = TreeDiff(from: TreeSnapshot(), to: new)
+    let updates = diff.runs[1]
+    #expect(updates.count > 3)
+
+    let pages = try drain(state, to: new, batchSize: 3)
+    #expect(pages.flatMap(\.run) == updates)
+    let allButLastMore = pages.dropLast().allSatisfy { $0.moreComing }
+    #expect(allButLastMore)
+    #expect(pages.last?.moreComing == false)
+    #expect(pages.last?.state.snapshot == new)
+  }
+
+  @Test(
+    "Batched pages send every run in order, each change once",
+    arguments: [1, 2, 5])
+  func everyRunInBatches(_ batchSize: Int) throws {
+    let documents = Fixtures.documents.filter { $0.correspondent != 1 }
+    var moved = documents
+    moved[moved.firstIndex { $0.id == 12 }!].correspondent = 2
+    var correspondents = Fixtures.correspondents
+    correspondents[1].name = "Acme Utilities"
+    let new = LibraryTree(
+      documents: moved, tags: Fixtures.tags, correspondents: correspondents,
+      documentTypes: Fixtures.documentTypes
+    ).snapshot()
+    let old = Fixtures.tree().snapshot()
+    let diff = TreeDiff(from: old, to: new)
+
+    let pages = try drain(ChangePager.initialState(current: old, epoch: "e"), to: new,
+      batchSize: batchSize)
+    #expect(pages.flatMap(\.run) == diff.changes)
+    #expect(Set(pages.flatMap(\.run)).count == diff.changes.count)
+    #expect(pages.last?.state.snapshot == new)
+  }
+
+  @Test("A cut run is resumed from the saved state, not from its start")
+  func resumedAfterReload() throws {
+    let new = Fixtures.tree().snapshot()
+    let state = ChangePager.initialState(current: TreeSnapshot(), epoch: "e")
+    let first = try ChangePager.nextPage(
+      state: state, from: state.anchor, current: new, batchSize: 2)
+    #expect(first.moreComing)
+    #expect(first.state.resumeRun == 1)
+    // The state as saved and read back (a new burst).
+    let saved = try JSONDecoder().decode(
+      ChangeState.self, from: JSONEncoder().encode(first.state))
+    let second = try ChangePager.nextPage(
+      state: saved, from: first.anchor, current: new, batchSize: 2)
+    #expect(Set(second.run).isDisjoint(with: Set(first.run)))
+    #expect(first.run + second.run == Array(TreeDiff(from: TreeSnapshot(), to: new).runs[1].prefix(4)))
+  }
+
+  @Test("A state saved before batching decodes and pages as before")
+  func oldStateDecodes() throws {
+    let json = #"{"epoch":"e","counter":1,"snapshot":{"entries":{}}}"#
+    let state = try JSONDecoder().decode(ChangeState.self, from: Data(json.utf8))
+    #expect(state.resumeRun == nil)
+  }
+}

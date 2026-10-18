@@ -81,6 +81,14 @@ public final class FreshRead<Value: Sendable> {
   /// it. A read's error reaches the callers that joined it; an older read's
   /// error does not reach a caller that only waited for it to end.
   public func fresh(_ read: @escaping @MainActor () async throws -> Value) async throws -> Value {
+    try await freshEntry(read).value
+  }
+
+  /// ``fresh(_:)`` with the generation of the value it returns, which is
+  /// ``cachedGeneration`` when it returns.
+  public func freshEntry(_ read: @escaping @MainActor () async throws -> Value) async throws
+    -> (value: Value, generation: UInt64)
+  {
     // Any read with this generation or a later one starts after this call.
     let wanted = latest.issued + 1
     while true {
@@ -107,20 +115,22 @@ public final class FreshRead<Value: Sendable> {
     -> Value
   {
     if let cached = latest.value { return cached }
-    if let flight = inFlight { return try await finish(flight) }
+    if let flight = inFlight { return try await finish(flight).value }
     return try await fresh(read)
   }
 
   /// Awaits `flight`, empties the slot if it still holds it, and returns the
-  /// newest value held after offering the flight's result.
+  /// newest value held after offering the flight's result, with its
+  /// generation.
   private func finish(_ flight: (generation: UInt64, task: Task<Value, any Error>)) async throws
-    -> Value
+    -> (value: Value, generation: UInt64)
   {
     defer {
       if inFlight?.generation == flight.generation { inFlight = nil }
     }
     let value = try await flight.task.value
-    return latest.offer(value, generation: flight.generation)
+    let held = latest.offer(value, generation: flight.generation)
+    return (held, latest.generation)
   }
 }
 
@@ -155,3 +165,60 @@ public struct ExpiringValue<Value> {
 }
 
 extension ExpiringValue: Sendable where Value: Sendable {}
+
+/// What one burst of change pages keeps between its pages, for at most
+/// `lifetime`: the library the pages diff against, with the generation of the
+/// read that produced it (``LatestWins/generation``), and the change state as
+/// last saved, so a page neither rereads nor decodes the state.
+///
+/// The library is handed out only while no newer read has been cached
+/// (`newestGeneration`): a lookup or an enumeration may have read the library
+/// after the burst started, and a change page must never report from a
+/// library older than one the system was already given items from. The state
+/// stays good either way: it is what was saved.
+public struct ChangeBurst<Library> {
+  public struct Entry {
+    public var library: Library
+    public var generation: UInt64
+    public var state: ChangeState
+  }
+
+  private var stored: ExpiringValue<Entry>
+
+  public init(lifetime: TimeInterval) {
+    stored = ExpiringValue(lifetime: lifetime)
+  }
+
+  /// The burst's library and its generation, unless there is no burst, it
+  /// expired, or its library is older than `newestGeneration`.
+  public func library(at now: Date, newestGeneration: UInt64) -> (
+    library: Library, generation: UInt64
+  )? {
+    guard let entry = stored.value(at: now), entry.generation >= newestGeneration else {
+      return nil
+    }
+    return (entry.library, entry.generation)
+  }
+
+  /// The change state the burst last saved, unless there is no burst or it
+  /// expired.
+  public func state(at now: Date) -> ChangeState? {
+    stored.value(at: now)?.state
+  }
+
+  /// Keeps `library` (from the read of `generation`) and `state` for the
+  /// next page, as of `now`.
+  public mutating func keep(
+    library: Library, generation: UInt64, state: ChangeState, at now: Date
+  ) {
+    stored.set(Entry(library: library, generation: generation, state: state), at: now)
+  }
+
+  /// Ends the burst.
+  public mutating func end(at now: Date) {
+    stored.set(nil, at: now)
+  }
+}
+
+extension ChangeBurst.Entry: Sendable where Library: Sendable {}
+extension ChangeBurst: Sendable where Library: Sendable {}

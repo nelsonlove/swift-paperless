@@ -155,3 +155,43 @@ struct ExpiringValueTests {
     #expect(holder.value(at: start) == nil)
   }
 }
+
+@Suite
+struct ChangeBurstTests {
+  private let state = ChangePager.initialState(current: TreeSnapshot(), epoch: "e")
+
+  @Test("The burst's library is handed out only while no newer read is cached")
+  func neverOlderThanCached() {
+    var burst = ChangeBurst<String>(lifetime: 30)
+    let now = Date()
+    burst.keep(library: "burst", generation: 2, state: state, at: now)
+    #expect(burst.library(at: now, newestGeneration: 2)?.library == "burst")
+    #expect(burst.library(at: now, newestGeneration: 1)?.library == "burst")
+    #expect(burst.library(at: now, newestGeneration: 3) == nil)
+    // The saved state is still good.
+    #expect(burst.state(at: now) == state)
+  }
+
+  @Test("An expired or ended burst hands out nothing")
+  func expiresAndEnds() {
+    var burst = ChangeBurst<String>(lifetime: 30)
+    let now = Date()
+    burst.keep(library: "burst", generation: 1, state: state, at: now)
+    #expect(burst.library(at: now.addingTimeInterval(31), newestGeneration: 0) == nil)
+    #expect(burst.state(at: now.addingTimeInterval(31)) == nil)
+    burst.end(at: now)
+    #expect(burst.state(at: now) == nil)
+  }
+
+  @Test("freshEntry returns the generation of the value it hands out")
+  @MainActor
+  func freshEntryGeneration() async throws {
+    let reads = FreshRead<Int>()
+    let first = try await reads.freshEntry { 1 }
+    let second = try await reads.freshEntry { 2 }
+    #expect(first.value == 1)
+    #expect(second.value == 2)
+    #expect(second.generation > first.generation)
+    #expect(reads.cachedGeneration == second.generation)
+  }
+}
