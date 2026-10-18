@@ -30,6 +30,10 @@ public final class Database: Sendable {
   /// instead of leaving a silently-emptied database unexplained.
   public let didEraseForSchemaChangeAtLaunch: Bool
 
+  /// Whether this is a file on disk, as opposed to the in-memory test seam or
+  /// bootstrap fallback, whose contents say nothing about what is configured.
+  public let isOnDisk: Bool
+
   /// Recently deleted documents, which list writes leave out — see
   /// ``QueryWriteBasis``.
   let deletionLog = DocumentDeletionLog()
@@ -87,6 +91,7 @@ public final class Database: Sendable {
       throw DatabaseError.openFailed(path: path.path, underlying: error)
     }
     self.writer = pool
+    isOnDisk = true
 
     // The directory and the database file are what these calls actually set.
     // On a first launch the -wal / -shm sidecars don't exist yet (WAL creates
@@ -151,6 +156,7 @@ public final class Database: Sendable {
   private init(writer: any DatabaseWriter) {
     self.writer = writer
     didEraseForSchemaChangeAtLaunch = false
+    isOnDisk = false
   }
 
   // MARK: - Destructive maintenance
