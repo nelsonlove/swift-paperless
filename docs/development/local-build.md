@@ -23,36 +23,46 @@ done
 
 ## Simulator build without a team
 
+The commands below keep git and Xcode source control away from the login keychain, so they also run on a build machine where nobody can answer a prompt. Every dependency is public, so no credentials are needed. Set this environment once in the shell:
+
+```sh
+export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=
+```
+
+The empty `credential.helper` value clears git's credential helpers for this shell only, and `-scmProvider system` below makes Xcode fetch packages with that git instead of its own source control (which reads the keychain).
+
 ```sh
 xcodegen generate
+xcodebuild -resolvePackageDependencies \
+  -project swift-paperless.xcodeproj \
+  -scheme swift-paperless \
+  -scmProvider system \
+  -derivedDataPath build/DerivedData
 xcodebuild build \
   -project swift-paperless.xcodeproj \
   -scheme swift-paperless \
   -configuration Debug \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
+  -scmProvider system \
   -derivedDataPath build/DerivedData \
   -skipPackagePluginValidation -skipMacroValidation \
   CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER=
 ```
 
+Both commands use the same `-derivedDataPath`, so the build finds the packages the first command resolved. Change the device name and `OS` to a simulator you have (`xcrun simctl list devices available`).
+
 `CODE_SIGN_IDENTITY=-` signs ad hoc. It needs no certificate. For a simulator build the linker still embeds the entitlements (the app group, and the keychain group with the placeholder prefix `FAKETEAMID`) in the binary's `__TEXT,__entitlements` section, not in the code signature, so `codesign -d --entitlements` shows an empty list. Read the section instead: `otool -X -s __TEXT __entitlements build/DerivedData/Build/Products/Debug-iphonesimulator/Paperless.app/Paperless` prints it as hex.
-
-## Headless package resolution
-
-On a build machine where nobody can answer a keychain prompt, resolve the packages with the git command line and no credential helper. Every dependency is public, so no credentials are needed:
-
-```sh
-GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \
-  xcodebuild -resolvePackageDependencies -project swift-paperless.xcodeproj -scmProvider system
-```
-
-The empty `credential.helper` value clears the helper list for that one process only. Pass the same environment and `-scmProvider system` to the build.
 
 ## Install and run
 
+Use the simulator's UDID from `xcrun simctl list devices available`, so the command cannot pick a device of another runtime. `bootstatus -b` boots the device if it is not booted and waits until it is ready; it does not fail when the device already runs.
+
 ```sh
-xcrun simctl boot 'iPhone 17 Pro'
-xcrun simctl install booted build/DerivedData/Build/Products/Debug-iphonesimulator/Paperless.app
-xcrun simctl launch booted com.paulgessinger.swift-paperless
-xcrun simctl io booted screenshot screenshot.png
+UDID=<udid of the simulator>
+xcrun simctl bootstatus "$UDID" -b
+xcrun simctl install "$UDID" build/DerivedData/Build/Products/Debug-iphonesimulator/Paperless.app
+xcrun simctl launch "$UDID" com.paulgessinger.swift-paperless
+xcrun simctl io "$UDID" screenshot build/screenshot.png
 ```
+
+`build/` is ignored by git, so the screenshot stays out of commits.
