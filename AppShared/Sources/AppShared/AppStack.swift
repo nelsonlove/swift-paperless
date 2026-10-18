@@ -55,7 +55,8 @@ public final class AppStack {
   ///     Only the on-disk database may be paired with the app-group store: an
   ///     index that does not outlive the process would judge every file on
   ///     disk unaccounted for.
-  ///   - role: `.fileProviderExtension` skips every launch step.
+  ///   - role: `.fileProviderExtension` skips every launch step and every
+  ///     cache upkeep (the over-budget reclaim, the first build's trim).
   init(
     database: Database, suspension: DatabaseSuspensionController? = nil,
     contentStore: ContentStore? = nil, role: Role = .app
@@ -65,11 +66,16 @@ public final class AppStack {
     self.suspension = suspension
     let connectionManager = ConnectionManager(database: database)
     self.connectionManager = connectionManager
-    let contentReclaimer = ContentReclaimer(database: database, store: contentStore)
+    // The extension does no cache upkeep: no reclaim pass when a download
+    // goes over the budget, and no trim when a repository is first built. The
+    // app, whose lists and files are in use, does both.
+    let maintainsCache = role == .app
+    let contentReclaimer = ContentReclaimer(
+      database: database, store: contentStore, reclaimsOverBudget: maintainsCache)
     self.contentReclaimer = contentReclaimer
     let sessionRegistry = ServerSessionRegistry(
       database: database, manager: connectionManager, suspension: suspension,
-      contentReclaimer: contentReclaimer)
+      contentReclaimer: contentReclaimer, maintainsCache: maintainsCache)
     self.sessionRegistry = sessionRegistry
     suspension.onExpire = { [weak sessionRegistry] in sessionRegistry?.cancelAllWork() }
     // The rows went with the server; its files are only found by the walk.

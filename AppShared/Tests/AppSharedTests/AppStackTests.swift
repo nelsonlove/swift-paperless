@@ -71,4 +71,20 @@ struct AppStackTests {
     }
     #expect(closed, "the app stack never closed the open step")
   }
+
+  @Test("A stack built for the File Provider extension builds sessions that do no cache upkeep")
+  func extensionSessionsDoNoUpkeep() throws {
+    let serverID = UUID()
+    let database = try Database.seeded(serverID: serverID)
+
+    let extensionStack = AppStack(database: database, role: .fileProviderExtension)
+    #expect(!extensionStack.sessionRegistry.maintainsCache)
+    #expect(!extensionStack.sessionRegistry.session(for: serverID).maintainsCache)
+    #expect(!extensionStack.contentReclaimer.reclaimsOverBudget)
+
+    let app = AppStack(database: database)
+    #expect(app.sessionRegistry.maintainsCache)
+    #expect(app.sessionRegistry.session(for: serverID).maintainsCache)
+    #expect(app.contentReclaimer.reclaimsOverBudget)
+  }
 }
