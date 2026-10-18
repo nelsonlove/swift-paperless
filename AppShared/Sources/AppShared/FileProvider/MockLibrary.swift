@@ -40,7 +40,7 @@
     public static let serverID = UUID(uuidString: "6D0C4B1E-5EED-4A11-8000-00000000C0DE")!
     /// A reserved name that never resolves (RFC 2606), so no request, and no
     /// token, ever leaves the device.
-    public static let url = URL(string: "https://paperless.invalid/api/")!
+    public static let url = URL(string: "https://paperless.invalid/")!
     public static let friendlyName = "Mock Paperless"
     public static let user = User(id: 1, isSuperUser: true, username: "demo")
     /// Known, so `ApiRepository` builds without probing a server that is not there.
