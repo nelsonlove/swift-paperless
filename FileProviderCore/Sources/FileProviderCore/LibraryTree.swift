@@ -143,6 +143,27 @@ public struct LibraryTree: Sendable {
     return String(describing: candidate) > String(describing: kept)
   }
 
+  /// Elements keyed by id. When an id appears more than once, the copy with
+  /// the greater name wins, then the one with the greater full description,
+  /// so the choice does not depend on input order (as for documents).
+  static func byID<Element: Identifiable>(
+    _ elements: [Element], name: KeyPath<Element, String>
+  ) -> [Element.ID: Element] {
+    var result: [Element.ID: Element] = [:]
+    for element in elements {
+      if let kept = result[element.id] {
+        let (newName, keptName) = (element[keyPath: name], kept[keyPath: name])
+        if newName != keptName {
+          guard newName > keptName else { continue }
+        } else if String(describing: element) <= String(describing: kept) {
+          continue
+        }
+      }
+      result[element.id] = element
+    }
+    return result
+  }
+
   /// The year of a document's `created` date, independent of the current
   /// time zone.
   ///
@@ -266,12 +287,10 @@ extension LibraryTree {
     ) {
       self.settings = settings
       self.labels = labels
-      tagsByID = Dictionary(tags.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      tagsByID = LibraryTree.byID(tags, name: \.name)
       tagParents = Builder.effectiveTagParents(tagsByID)
-      correspondentsByID = Dictionary(
-        correspondents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-      documentTypesByID = Dictionary(
-        documentTypes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      correspondentsByID = LibraryTree.byID(correspondents, name: \.name)
+      documentTypesByID = LibraryTree.byID(documentTypes, name: \.name)
 
       for browse in settings.browseFolders {
         let label: String =

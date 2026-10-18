@@ -291,6 +291,36 @@ struct LibraryTreeTests {
     #expect(tree.names(.root) == ["Acme Utilities (#1)", "Acme Utilities (#5)"])
   }
 
+  @Test("Duplicate tag, correspondent and type ids are resolved the same in any order")
+  func duplicateElements() {
+    let documents = [Fixtures.document(1, "Bill", correspondent: 1, type: 1, tags: [1])]
+    let tagsA = [Fixtures.tag(1, "alpha"), Fixtures.tag(1, "beta")]
+    let correspondentsA = [
+      Fixtures.correspondent(1, "Acme Utilities"), Fixtures.correspondent(1, "Northwind Bank"),
+    ]
+    let typesA = [Fixtures.documentType(1, "Invoice"), Fixtures.documentType(1, "Letter")]
+    // Same name, other fields differ: the full description breaks the tie.
+    var slugged = Fixtures.correspondent(2, "City Library")
+    slugged.slug = "zzz"
+    let tieA = [Fixtures.correspondent(2, "City Library"), slugged]
+
+    func build(_ reverse: Bool) -> LibraryTree {
+      func order<T>(_ list: [T]) -> [T] { reverse ? list.reversed() : list }
+      return LibraryTree(
+        documents: documents + [Fixtures.document(2, "Card", correspondent: 2)],
+        tags: order(tagsA), correspondents: order(correspondentsA + tieA),
+        documentTypes: order(typesA))
+    }
+    let forward = build(false)
+    let backward = build(true)
+    #expect(forward.snapshot() == backward.snapshot())
+    #expect(forward.item(for: .folder(.correspondent(1)))?.name == "Northwind Bank")
+    #expect(forward.item(for: .browseFolder(.tag, id: 1))?.name == "beta")
+    #expect(forward.item(for: .browseFolder(.documentType, id: 1))?.name == "Letter")
+    let tie = LibraryTree.byID(tieA, name: \.name)
+    #expect(tie == LibraryTree.byID(tieA.reversed(), name: \.name))
+  }
+
   @Test("document(for:) is nil for an identifier not in the tree")
   func documentLookupConsistent() {
     let tree = Fixtures.tree()
