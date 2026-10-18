@@ -944,15 +944,15 @@ extension ApiRepository: Repository {
     }
     try validateDownloadResponse(response, request: request)
 
-    let dest = URL(
-      fileURLWithPath: NSTemporaryDirectory(), isDirectory: true
-    ).appendingPathComponent(
-      response.suggestedFilename ?? "document.pdf")
-    if FileManager.default.fileExists(atPath: dest.path) {
-      _ = try FileManager.default.replaceItemAt(dest, withItemAt: tempURL)
-    } else {
-      try FileManager.default.moveItem(at: tempURL, to: dest)
-    }
+    // A folder of its own per download, so the file keeps the server's name
+    // (which the preview shows) while two downloads of same-named files, at
+    // the same time or one after the other, never share a path and hand over
+    // each other's document.
+    let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let dest = folder.appendingPathComponent(response.suggestedFilename ?? "document.pdf")
+    try FileManager.default.moveItem(at: tempURL, to: dest)
     return dest
   }
 

@@ -591,6 +591,36 @@ struct ApiRepositoryDownloadTest {
     #expect(await index.entries.isEmpty)
   }
 
+  // Without a store to keep them, downloads land in the temporary directory
+  // under the server's file name. Two documents with the same name, fetched
+  // at the same time, must each get their own file.
+  @Test
+  func sameNamedDownloadsWithoutAStoreGetTheirOwnFiles() async throws {
+    let (store, _) = try Self.makeStore()
+    let repo = Self.makeRepo(contentStore: store, index: nil)
+    DownloadMockURLProtocol.responder = { req in
+      // Both callers reach the server before either file is moved.
+      Thread.sleep(forTimeInterval: 0.05)
+      let body = req.url!.path.contains("/1/") ? "first" : "second"
+      return (Self.okResponse(for: req, suggested: "scan.pdf"), Data(body.utf8))
+    }
+    defer { DownloadMockURLProtocol.reset() }
+
+    async let a = repo.download(document: Self.makeDocument(id: 1))
+    async let b = repo.download(document: Self.makeDocument(id: 2))
+    let (first, second) = try await (a, b)
+    defer {
+      try? FileManager.default.removeItem(at: first.deletingLastPathComponent())
+      try? FileManager.default.removeItem(at: second.deletingLastPathComponent())
+    }
+
+    #expect(first != second)
+    #expect(first.lastPathComponent == "scan.pdf")
+    #expect(second.lastPathComponent == "scan.pdf")
+    #expect(try String(contentsOf: first, encoding: .utf8) == "first")
+    #expect(try String(contentsOf: second, encoding: .utf8) == "second")
+  }
+
   @Test
   func concurrentDownloadsForSameKeyDeduped() async throws {
     let (store, _) = try Self.makeStore()
