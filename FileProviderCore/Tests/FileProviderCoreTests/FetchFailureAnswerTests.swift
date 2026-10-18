@@ -3,75 +3,96 @@
 //  FileProviderCore
 //
 
+import Common
+import Foundation
+import Networking
 import Testing
 
 @testable import FileProviderCore
 
 @Suite
 struct FetchFailureAnswerTests {
-  /// Each failure as the extension classifies it.
-  enum Case: CaseIterable, Sendable {
-    case serverNotFoundStillInDatabase
-    case proxyNotFound
-    case notFoundRowMissing
-    case forbidden
-    case connectivity
+  typealias Answer = FetchFailureAnswer<String>
 
-    var failure: FetchFailureAnswer.Failure {
-      switch self {
-      case .serverNotFoundStillInDatabase, .proxyNotFound, .notFoundRowMissing: .notFound
-      case .forbidden, .connectivity: .other
-      }
-    }
+  static let keepingCopy: [ErrorAnswer.Kind] = [
+    .notFound, .unauthorized, .unreachable, .libraryUnavailable, .other,
+  ]
+
+  @Test("A stored copy is served for a 404, 401, unreachable or other failure", arguments: keepingCopy)
+  func storedCopy(_ kind: ErrorAnswer.Kind) {
+    #expect(Answer.answer(for: kind, storedCopy: "copy") == .storedCopy("copy"))
   }
 
-  @Test("A stored copy is served for any failure", arguments: Case.allCases)
-  func storedCopy(_ failure: Case) {
-    #expect(
-      FetchFailureAnswer.answer(for: failure.failure, hasStoredCopy: true, isCancelled: false)
-        == .storedCopy)
+  @Test("Without a stored copy the error is rethrown for the map", arguments: keepingCopy)
+  func rethrow(_ kind: ErrorAnswer.Kind) {
+    #expect(Answer.answer(for: kind, storedCopy: nil) == .rethrow)
   }
 
-  @Test(
-    "Without a stored copy a 404 is serverUnreachable, from any source",
-    arguments: [Case.serverNotFoundStillInDatabase, .proxyNotFound, .notFoundRowMissing])
-  func notFound(_ failure: Case) {
-    #expect(
-      FetchFailureAnswer.answer(for: failure.failure, hasStoredCopy: false, isCancelled: false)
-        == .serverUnreachable)
+  @Test("A 403 is no permission, even with a stored copy", arguments: ["copy", nil] as [String?])
+  func forbidden(_ storedCopy: String?) {
+    #expect(Answer.answer(for: .forbidden, storedCopy: storedCopy) == .noPermission)
   }
 
-  @Test(
-    "Without a stored copy a 403 or a connectivity error is its own error",
-    arguments: [Case.forbidden, .connectivity])
-  func otherErrors(_ failure: Case) {
-    #expect(
-      FetchFailureAnswer.answer(for: failure.failure, hasStoredCopy: false, isCancelled: false)
-        == .error)
+  @Test("A cancellation is a cancellation", arguments: ["copy", nil] as [String?])
+  func cancelled(_ storedCopy: String?) {
+    #expect(Answer.answer(for: .cancelled, storedCopy: storedCopy) == .cancelled)
   }
 
-  @Test("A cancellation is a cancellation", arguments: Case.allCases, [true, false])
-  func cancelled(_ failure: Case, hasStoredCopy: Bool) {
-    #expect(
-      FetchFailureAnswer.answer(
-        for: failure.failure, hasStoredCopy: hasStoredCopy, isCancelled: true) == .cancelled)
+  @Test("A 404 without a stored copy ends as serverUnreachable, never noSuchItem")
+  func notFoundEnds() {
+    #expect(Answer.answer(for: .notFound, storedCopy: nil) == .rethrow)
+    #expect(ErrorAnswer.answer(for: .notFound) == .serverUnreachable)
   }
 }
 
 @Suite
 struct ErrorAnswerTests {
-  @Test("A 404 maps to serverUnreachable, never noSuchItem")
-  func notFound() {
-    #expect(ErrorAnswer.answer(for: .notFound) == .serverUnreachable)
-  }
-
   @Test("Each kind maps to the error the header names for it")
   func kinds() {
+    #expect(ErrorAnswer.answer(for: .notFound) == .serverUnreachable)
     #expect(ErrorAnswer.answer(for: .libraryUnavailable) == .serverUnreachable)
     #expect(ErrorAnswer.answer(for: .unreachable) == .serverUnreachable)
     #expect(ErrorAnswer.answer(for: .unauthorized) == .notAuthenticated)
     #expect(ErrorAnswer.answer(for: .forbidden) == .noPermission)
     #expect(ErrorAnswer.answer(for: .cancelled) == .cancelled)
     #expect(ErrorAnswer.answer(for: .other) == .unrepresentable)
+  }
+
+  @Test("A 404 status, as the download reports it, is notFound")
+  func notFound() {
+    // ApiRepository.validateDownloadResponse throws this for a 404.
+    let error = RequestError.unexpectedStatusCode(code: .notFound, detail: "")
+    #expect(ErrorAnswer.Kind(classifying: error) == .notFound)
+  }
+
+  @Test("A 403 is forbidden")
+  func forbidden() {
+    #expect(ErrorAnswer.Kind(classifying: RequestError.forbidden(detail: nil)) == .forbidden)
+  }
+
+  @Test("A 401 is unauthorized")
+  func unauthorized() {
+    #expect(ErrorAnswer.Kind(classifying: RequestError.unauthorized(detail: "")) == .unauthorized)
+  }
+
+  @Test("A transport failure, normalized as the download does it, is unreachable")
+  func connectivity() {
+    for code in [URLError.Code.timedOut, .cannotConnectToHost, .notConnectedToInternet] {
+      let error = RequestError.normalizingTransportFailure(
+        URLError(code), path: .satisfied)
+      #expect(ErrorAnswer.Kind(classifying: error) == .unreachable)
+    }
+  }
+
+  @Test("A 5xx is other: a transient error, or the stored copy")
+  func serverError() {
+    let error = RequestError.unexpectedStatusCode(code: .internalServerError, detail: nil)
+    #expect(ErrorAnswer.Kind(classifying: error) == .other)
+    #expect(FetchFailureAnswer.answer(for: .other, storedCopy: "copy") == .storedCopy("copy"))
+  }
+
+  @Test("A cancellation is cancelled")
+  func cancelled() {
+    #expect(ErrorAnswer.Kind(classifying: CancellationError()) == .cancelled)
   }
 }

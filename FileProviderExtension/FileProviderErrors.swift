@@ -19,21 +19,17 @@ import Networking
 /// NSFileReadNoPermissionError for content the user may not read, and
 /// NSFileProviderErrorNotAuthenticated and NSFileProviderErrorServerUnreachable
 /// for "the current state of the system / domain"; the Cancellations section
-/// (lines 396-400) asks for NSUserCancelledError. This map never gives
+/// (lines 396-400) asks for NSUserCancelledError. This map never makes
 /// NSFileProviderErrorNoSuchItem, which makes the system delete the item
-/// (line 371): a 404 is not proof a document is gone, and deletions reach
-/// Files only through the working-set change diff over the database. The
-/// choice per kind of failure is FileProviderCore's `ErrorAnswer`.
+/// (line 371): a 404 is not proof a document is gone. It passes through one
+/// a caller made itself (`item(for:)` and the enumerators answer it for an
+/// identifier a library that was read does not hold); fetchContents rewrites
+/// it at its own exit. The choice per kind of failure is FileProviderCore's
+/// `ErrorAnswer`.
 enum FileProviderErrors {
   static func map(_ error: any Error) -> NSError {
     let nsError = error as NSError
-    if nsError.domain == NSFileProviderErrorDomain {
-      // Passed through, except a deletion: no error that reaches this map
-      // shows that an item is gone.
-      return nsError.code == NSFileProviderError.Code.noSuchItem.rawValue
-        ? NSFileProviderError(.serverUnreachable) as NSError : nsError
-    }
-    if nsError.domain == NSCocoaErrorDomain {
+    if nsError.domain == NSFileProviderErrorDomain || nsError.domain == NSCocoaErrorDomain {
       return nsError
     }
     switch ErrorAnswer.answer(for: kind(of: error)) {
@@ -52,16 +48,9 @@ enum FileProviderErrors {
     }
   }
 
-  private static func kind(of error: any Error) -> ErrorAnswer.Kind {
-    if error is LibraryUnavailable { return .libraryUnavailable }
-    if error.isCancellationError { return .cancelled }
-    guard let request = error as? RequestError else { return .other }
-    switch request {
-    case .unauthorized: return .unauthorized
-    case .forbidden: return .forbidden
-    case .unexpectedStatusCode(let code, _) where code == .notFound: return .notFound
-    case .connectivity, .localNetworkDenied, .certificate: return .unreachable
-    default: return .other
-    }
+  /// The kind of `error`; FileProviderCore classifies all but the
+  /// extension's own LibraryUnavailable.
+  static func kind(of error: any Error) -> ErrorAnswer.Kind {
+    error is LibraryUnavailable ? .libraryUnavailable : ErrorAnswer.Kind(classifying: error)
   }
 }

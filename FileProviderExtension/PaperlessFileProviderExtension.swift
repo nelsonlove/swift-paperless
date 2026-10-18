@@ -185,10 +185,11 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
       }
       guard core.isContainer else {
         // A document is no container, but it exists: not noSuchItem, which
-        // would make the system delete it. The same section names
-        // NSFileProviderErrorServerUnreachable for "the current state of the
-        // system / domain".
-        throw NSFileProviderError(.serverUnreachable)
+        // would make the system delete it, and not serverUnreachable, which
+        // would pause the domain for a condition that never changes. The
+        // same section answers a container the extension cannot enumerate
+        // (the trash) with NSFeatureUnsupportedError from NSCocoaErrorDomain.
+        throw CocoaError(.featureUnsupported)
       }
       return LibraryEnumerator(holder: holder, scope: .container(core))
     }
@@ -223,7 +224,7 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
           try? FileManager.default.removeItem(at: url)
         }
       } catch {
-        _ = finish(nil, nil, FileProviderErrors.map(error))
+        _ = finish(nil, nil, Self.fetchFailure(error, context: context))
       }
     }
     let cancelTask = progress.cancellationHandler
@@ -234,24 +235,44 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     return progress
   }
 
+  /// The single exit for a failed fetch. fetchContents never answers
+  /// NSFileProviderErrorNoSuchItem: "the system will consider the item has
+  /// been removed from the domain and will attempt to delete it from disk"
+  /// (NSFileProviderReplicatedExtension.h, fetchContents "Error cases", line
+  /// 371). A document leaves Files only through the working-set change diff,
+  /// after the app's sync removes its row. A 404, or a document the library
+  /// read now does not hold, is "the current state of the system / domain"
+  /// (line 382), NSFileProviderErrorServerUnreachable, after which the system
+  /// backs off "until the next time it is signalled"; so the working set is
+  /// signalled (coalesced by FileProviderSignaler), and the change diff runs.
+  @MainActor
+  private static func fetchFailure(_ error: any Error, context: ExtensionContext) -> NSError {
+    let notInLibrary = error is DocumentNotInLibrary
+    var answer =
+      notInLibrary ? NSFileProviderError(.serverUnreachable) as NSError : FileProviderErrors.map(error)
+    if answer.domain == NSFileProviderErrorDomain,
+      answer.code == NSFileProviderError.Code.noSuchItem.rawValue
+    {
+      answer = NSFileProviderError(.serverUnreachable) as NSError
+    }
+    if notInLibrary || FileProviderErrors.kind(of: error) == .notFound,
+      let serverID = context.serverID
+    {
+      FileProviderSignaler.shared.signal(serverID: serverID)
+    }
+    return answer
+  }
+
   @MainActor
   private static func fetch(
     _ identifier: NSFileProviderItemIdentifier, context: ExtensionContext, progress: Progress
   ) async throws -> (URL, NSFileProviderItem) {
-    // fetchContents never answers NSFileProviderErrorNoSuchItem: "the system
-    // will consider the item has been removed from the domain and will
-    // attempt to delete it from disk" (NSFileProviderReplicatedExtension.h,
-    // fetchContents "Error cases", line 371). A document leaves Files only
-    // through the working-set change diff, after the app's sync removes its
-    // row. An item that cannot be fetched now is "the current state of the
-    // system / domain" (line 382): NSFileProviderErrorServerUnreachable.
-    guard let core = ItemIdentifier(identifier) else {
-      throw NSFileProviderError(.serverUnreachable)
-    }
-    guard core.documentID != nil else {
-      // A folder has no contents to fetch. Not noSuchItem, which would make
-      // the system delete it; NSFileReadNoPermissionError is the error the
-      // fetchContents "Error cases" name for content the user cannot read.
+    // An identifier that is no document's, or a folder's: there are no
+    // contents to fetch, and never will be. Not noSuchItem, which would make
+    // the system delete the item, and not serverUnreachable, which would
+    // pause the domain; NSFileReadNoPermissionError is the error the
+    // fetchContents "Error cases" name for content the user cannot read.
+    guard let core = ItemIdentifier(identifier), core.documentID != nil else {
       throw CocoaError(.fileReadNoPermission)
     }
     // A library that cannot be read throws LibraryUnavailable, which maps to
@@ -260,9 +281,9 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     guard let document = library.tree.document(for: core),
       let item = context.item(for: core, in: library)
     else {
-      // Not in the library as read now: the change diff removes the item
-      // once the system next enumerates changes.
-      throw NSFileProviderError(.serverUnreachable)
+      // Not in the library as read now: `fetchFailure` answers
+      // serverUnreachable and signals, and the change diff removes the item.
+      throw DocumentNotInLibrary()
     }
 
     let source = try await context.work {
@@ -322,11 +343,13 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
   /// 4. Otherwise a download through the repository (`download` revalidates a
   ///    stored copy with the server).
   ///
-  /// Any failure of steps 2 to 4 other than a cancellation serves the stored
-  /// copy when there is one; without one, a 404 (from the server or anything
-  /// between) is NSFileProviderErrorServerUnreachable and any other error is
-  /// mapped by `FileProviderErrors`. Never NSFileProviderErrorNoSuchItem
-  /// (FileProviderCore's `FetchFailureAnswer`).
+  /// A failure of steps 2 to 4 follows FileProviderCore's
+  /// `FetchFailureAnswer`: a cancellation is NSUserCancelledError; a 403 is
+  /// NSFileReadNoPermissionError, stored copy or not; any other failure (404,
+  /// 401, connectivity and timeouts, 5xx, a certificate or local-network
+  /// refusal, a local read) serves the stored copy when there is one, and
+  /// otherwise is rethrown for `fetchFailure` (a 404 becomes
+  /// NSFileProviderErrorServerUnreachable). Never NSFileProviderErrorNoSuchItem.
   @MainActor
   private static func content(
     of document: Document, context: ExtensionContext, progress: Progress
@@ -339,27 +362,19 @@ final class PaperlessFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     /// The answer to `error` from `step`: the stored copy, or an error that
     /// keeps the item.
     func answer(_ error: any Error, _ step: String) throws -> URL {
-      var failure = FetchFailureAnswer.Failure.other
-      if case .unexpectedStatusCode(let code, _) = error as? RequestError, code == .notFound {
-        failure = .notFound
-      }
-      let decision = FetchFailureAnswer.answer(
-        for: failure, hasStoredCopy: stored != nil, isCancelled: error.isCancellationError)
-      if decision == .storedCopy, let stored {
+      switch FetchFailureAnswer.answer(
+        for: FileProviderErrors.kind(of: error), storedCopy: stored?.url)
+      {
+      case .storedCopy(let url):
         logger.info(
           "\(step, privacy: .public) failed (\(error)); serving the cached copy of document \(document.id, privacy: .public)"
         )
-        return stored.url
-      }
-      switch decision {
-      case .serverUnreachable:
-        logger.notice(
-          "\(step, privacy: .public) of document \(document.id, privacy: .public) answered 404; keeping the item"
-        )
-        throw NSFileProviderError(.serverUnreachable)
+        return url
       case .cancelled:
         throw CocoaError(.userCancelled)
-      case .storedCopy, .error:
+      case .noPermission:
+        throw CocoaError(.fileReadNoPermission)
+      case .rethrow:
         throw error
       }
     }
@@ -610,6 +625,9 @@ final class ContextHolder: @unchecked Sendable {
 
   @MainActor lazy var context = ExtensionContext(domain: domain)
 }
+
+/// The document is not in the library as read now; see `fetchFailure`.
+struct DocumentNotInLibrary: Error {}
 
 /// Calls a completion handler at most once, whichever path gets there first.
 final class Once: @unchecked Sendable {
