@@ -41,5 +41,7 @@ launch_arguments([
 
 concurrent_simulators(false)
 
-# only_testing(["Screenshots"])
+# Only the screenshot test: the target also holds the Files-app smoke test,
+# which must not run on every screenshot device.
+only_testing(["swift-paperlessUITests/Screenshots"])
 # testplan("Screenshots.xctestplan")
