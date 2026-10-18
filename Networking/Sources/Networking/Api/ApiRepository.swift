@@ -890,7 +890,14 @@ extension ApiRepository: Repository {
 
       // File first, row second: a file without a row is removed by the repair
       // walk once it is old enough, a row without a file would be served.
-      let url = try contentStore.store(key, movingFrom: tempURL)
+      let url: URL
+      do {
+        url = try contentStore.store(key, movingFrom: tempURL)
+      } catch {
+        // The move did not take the body; nobody else will.
+        try? FileManager.default.removeItem(at: tempURL)
+        throw error
+      }
       await record(checksum: Self.entityTag(of: response) ?? versionChecksum)
       return url
     }
