@@ -27,9 +27,9 @@ struct Handoff<Value>: @unchecked Sendable {
 /// calls), and finishes the page with `moreComing` while changes remain,
 /// saving the change state after each page that sent something, so a change
 /// is never sent twice and each run is applied before the next one (see
-/// ``TreeDiff``). The pages of one burst diff against one library read (never
-/// one older than the newest cached read) and keep the change state in
-/// memory, for ``ExtensionContext/burstLifetime`` at most, dropped when the
+/// ``TreeDiff``). The pages of one burst work from one library read (never
+/// one older than the newest cached read), diffed once and sliced per page,
+/// and keep the change state in memory, for ``ExtensionContext/burstLifetime`` at most, dropped when the
 /// burst ends, fails, is cancelled or the enumerator is invalidated. The
 /// change state covers every item of the tree, appearances included: the
 /// header says a directory the user enumerated and its children belong to the
@@ -134,10 +134,12 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
       return
     }
     let anchorData = anchor.rawValue
-    let batchSize = max(1, observer.value.suggestedBatchSize ?? Self.defaultBatchSize)
+    // A suggested size of 0 or less is no suggestion.
+    let suggested = observer.value.suggestedBatchSize ?? 0
+    let batchSize = suggested > 0 ? suggested : Self.defaultBatchSize
     run { context in
       do {
-        let (library, generation) = try await context.libraryForChanges()
+        let (library, generation, plan) = try await context.libraryForChanges()
         guard let state = await context.stateForChanges() else {
           // No state to diff against (first run, or the state was lost).
           context.endBurst()
@@ -146,7 +148,8 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
         }
         let page = try await Task.detached(priority: .userInitiated) {
           try ChangePager.nextPage(
-            state: state, from: anchorData, current: library.snapshot, batchSize: batchSize)
+            state: state, from: anchorData, current: library.snapshot, batchSize: batchSize,
+            plan: plan)
         }.value
         // Invalidated meanwhile: report nothing and save nothing, so the next
         // call starts from the same state; the burst is over.
@@ -170,7 +173,8 @@ final class LibraryEnumerator: NSObject, NSFileProviderEnumerator {
         // A burst invalidated while the state was saved is over; the page is
         // still reported, since the state already records it.
         if page.moreComing, !Task.isCancelled {
-          context.continueBurst(with: library, generation: generation, state: page.state)
+          context.continueBurst(
+            with: library, generation: generation, state: page.state, plan: page.remaining)
         } else {
           context.endBurst()
         }

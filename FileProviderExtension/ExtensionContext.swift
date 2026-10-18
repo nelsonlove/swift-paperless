@@ -140,11 +140,15 @@ final class ExtensionContext {
   ///
   /// - Throws: ``LibraryUnavailable`` when the library cannot be read.
   func library(refresh: Bool) async throws -> Library {
-    let read: @MainActor () async throws -> Library = { [weak self] in
+    refresh ? try await reads.fresh(readClosure) : try await reads.cachedOrFresh(readClosure)
+  }
+
+  /// The one read every library request hands to ``reads``.
+  private var readClosure: @MainActor () async throws -> Library {
+    { [weak self] in
       guard let self else { throw CancellationError() }
       return try await self.readLibrary()
     }
-    return refresh ? try await reads.fresh(read) : try await reads.cachedOrFresh(read)
   }
 
   /// One read of the database. The reads run on the database's queue and the
@@ -182,19 +186,24 @@ final class ExtensionContext {
   }
 
   /// The library for the next page of changes, with the generation of its
-  /// read: the burst's while a burst is running and young and no newer read
-  /// has been cached since (a lookup or an enumeration may have read the
-  /// library meanwhile), else a fresh read.
-  func libraryForChanges() async throws -> (library: Library, generation: UInt64) {
-    if let kept = burst.library(at: Date(), newestGeneration: reads.cachedGeneration) {
-      return kept
+  /// read and, inside a burst, the runs that remain (the page's plan):
+  /// the burst's while a burst is running and young and no newer read has
+  /// been cached since; the newer cached library, at its generation and with
+  /// no plan, when a lookup or an enumeration read the library meanwhile;
+  /// else (a new burst) a fresh read.
+  func libraryForChanges() async throws -> (
+    library: Library, generation: UInt64, plan: [[TreeDiff.Change]]?
+  ) {
+    let newest = reads.cached.map { (library: $0, generation: reads.cachedGeneration) }
+    switch burst.source(at: Date(), newest: newest) {
+    case .burst(let library, let generation, let plan):
+      return (library, generation, plan)
+    case .cached(let library, let generation):
+      return (library, generation, nil)
+    case .read:
+      let entry = try await reads.freshEntry(readClosure)
+      return (entry.value, entry.generation, nil)
     }
-    let read: @MainActor () async throws -> Library = { [weak self] in
-      guard let self else { throw CancellationError() }
-      return try await self.readLibrary()
-    }
-    let entry = try await reads.freshEntry(read)
-    return (entry.value, entry.generation)
   }
 
   /// The change state for the next page: the burst's, as it last saved it,
@@ -204,10 +213,12 @@ final class ExtensionContext {
     return await loadState()
   }
 
-  /// Keeps `library` (from the read of `generation`) and `state` (as saved)
-  /// for the next page of a burst.
-  func continueBurst(with library: Library, generation: UInt64, state: ChangeState) {
-    burst.keep(library: library, generation: generation, state: state, at: Date())
+  /// Keeps `library` (from the read of `generation`), `state` (as saved) and
+  /// the runs that remain for the next page of a burst.
+  func continueBurst(
+    with library: Library, generation: UInt64, state: ChangeState, plan: [[TreeDiff.Change]]
+  ) {
+    burst.keep(library: library, generation: generation, state: state, plan: plan, at: Date())
   }
 
   /// Ends the burst: its library and state are not used again.
