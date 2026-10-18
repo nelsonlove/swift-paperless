@@ -353,6 +353,33 @@ struct LibraryTreeTests {
     #expect(blank.item(for: .folder(.correspondent(nil)))?.name == FolderKey.noneToken)
   }
 
+  @Test("Display order breaks a name tie by the precomputed identifier string")
+  func displayOrderTie() {
+    let a = TreeItem(
+      identifier: .document(2), parent: .root, name: "Same.pdf", kind: .document, version: "")
+    let b = TreeItem(
+      identifier: .document(10), parent: .root, name: "Same.pdf", kind: .document, version: "")
+    let folder = TreeItem(
+      identifier: .folder(.year(2026)), parent: .root, name: "Zzz", kind: .folder, version: "")
+    // "doc:10" < "doc:2" as strings.
+    #expect(LibraryTree.displayOrder(b, "doc:10", a, "doc:2"))
+    #expect(!LibraryTree.displayOrder(a, "doc:2", b, "doc:10"))
+    #expect(LibraryTree.displayOrder(folder, "dir:year:2026", a, "doc:2"))
+  }
+
+  @Test("One preference rule: modified date first for documents, name first for elements")
+  func sharedPreference() {
+    let older = Fixtures.document(1, "Zulu", modified: Fixtures.date(2026, 1, 1))
+    let newer = Fixtures.document(1, "Alpha", modified: Fixtures.date(2026, 2, 1))
+    #expect(LibraryTree.isPreferred(newer, over: older))
+    // Without the modified step the same two compare by name.
+    #expect(LibraryTree.isPreferred(older, over: newer, name: \.title))
+    let alpha = Fixtures.tag(1, "alpha")
+    let beta = Fixtures.tag(1, "beta")
+    #expect(LibraryTree.isPreferred(beta, over: alpha, name: \.name))
+    #expect(LibraryTree.byID([beta, alpha], name: \.name)[1]?.name == "beta")
+  }
+
   @Test("document(for:) is nil for an identifier not in the tree")
   func documentLookupConsistent() {
     let tree = Fixtures.tree()

@@ -154,18 +154,14 @@ extension ItemIdentifier {
   private static func encode(_ key: FolderKey) -> String {
     switch key {
     case .correspondent(let id), .documentType(let id):
-      return encodeOptional(id)
+      return FolderKey.token(for: id)
     case .year(let year):
       return String(year)
     case .correspondentYear(let correspondent, let year):
-      let base = encodeOptional(correspondent)
+      let base = FolderKey.token(for: correspondent)
       guard let year else { return base }
       return "\(base)/\(year)"
     }
-  }
-
-  private static func encodeOptional(_ id: UInt?) -> String {
-    FolderKey.token(for: id)
   }
 
   private static func decodeKey(layout: FolderLayout, _ raw: Substring) -> FolderKey? {

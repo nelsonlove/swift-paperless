@@ -132,32 +132,43 @@ public struct LibraryTree: Sendable {
     (items, childIDs) = builder.finish()
   }
 
-  /// Which of two copies of one document id to keep: the later `modified`
-  /// (none counts as oldest), then the greater title, then the greater full
-  /// description, which is a total order over the values that build the tree.
-  static func isPreferred(_ candidate: Document, over kept: Document) -> Bool {
-    let candidateModified = candidate.modified ?? .distantPast
-    let keptModified = kept.modified ?? .distantPast
-    if candidateModified != keptModified { return candidateModified > keptModified }
-    if candidate.title != kept.title { return candidate.title > kept.title }
+  /// The one rule for which of two copies of one id to keep, so the choice
+  /// never depends on input order: the later `modified` (none counts as
+  /// oldest) when both carry one, then the greater name, then the greater
+  /// full description, which is a total order over the values that build the
+  /// tree. Documents pass their `modified` and title. Tags, correspondents
+  /// and document types carry no modified date, so for them the greater name
+  /// wins.
+  static func isPreferred<T>(
+    _ candidate: T, over kept: T, modified: KeyPath<T, Date?>? = nil,
+    name: KeyPath<T, String>
+  ) -> Bool {
+    if let modified {
+      let candidateModified = candidate[keyPath: modified] ?? .distantPast
+      let keptModified = kept[keyPath: modified] ?? .distantPast
+      if candidateModified != keptModified { return candidateModified > keptModified }
+    }
+    let (candidateName, keptName) = (candidate[keyPath: name], kept[keyPath: name])
+    if candidateName != keptName { return candidateName > keptName }
     return String(describing: candidate) > String(describing: kept)
   }
 
-  /// Elements keyed by id. When an id appears more than once, the copy with
-  /// the greater name wins, then the one with the greater full description,
-  /// so the choice does not depend on input order (as for documents).
+  /// Which of two copies of one document id to keep (``isPreferred(_:over:modified:name:)``
+  /// with the modified date and the title).
+  static func isPreferred(_ candidate: Document, over kept: Document) -> Bool {
+    isPreferred(candidate, over: kept, modified: \.modified, name: \.title)
+  }
+
+  /// Elements keyed by id. A repeated id keeps the copy
+  /// ``isPreferred(_:over:modified:name:)`` picks with no modified date: the
+  /// greater name, then the greater full description.
   static func byID<Element: Identifiable>(
     _ elements: [Element], name: KeyPath<Element, String>
   ) -> [Element.ID: Element] {
     var result: [Element.ID: Element] = [:]
     for element in elements {
-      if let kept = result[element.id] {
-        let (newName, keptName) = (element[keyPath: name], kept[keyPath: name])
-        if newName != keptName {
-          guard newName > keptName else { continue }
-        } else if String(describing: element) <= String(describing: kept) {
-          continue
-        }
+      if let kept = result[element.id], !isPreferred(element, over: kept, name: name) {
+        continue
       }
       result[element.id] = element
     }
@@ -385,7 +396,7 @@ extension LibraryTree {
         let id = document.correspondent
         let folder = ItemIdentifier.folder(.correspondent(id))
         addFolder(
-          folder, parent: .root, disambiguator: key(id)
+          folder, parent: .root, disambiguator: FolderKey.token(for: id)
         ) { $0.correspondentName(id) }
         return folder
 
@@ -393,7 +404,7 @@ extension LibraryTree {
         let id = document.documentType
         let folder = ItemIdentifier.folder(.documentType(id))
         addFolder(
-          folder, parent: .root, disambiguator: key(id)
+          folder, parent: .root, disambiguator: FolderKey.token(for: id)
         ) { $0.documentTypeName(id) }
         return folder
 
@@ -407,7 +418,9 @@ extension LibraryTree {
         let id = document.correspondent
         let year = LibraryTree.createdYear(document.created)
         let outer = ItemIdentifier.folder(.correspondentYear(correspondent: id, year: nil))
-        addFolder(outer, parent: .root, disambiguator: key(id)) { $0.correspondentName(id) }
+        addFolder(outer, parent: .root, disambiguator: FolderKey.token(for: id)) {
+          $0.correspondentName(id)
+        }
         let inner = ItemIdentifier.folder(.correspondentYear(correspondent: id, year: year))
         addFolder(inner, parent: outer, disambiguator: String(year)) { _ in String(year) }
         return inner
@@ -445,10 +458,6 @@ extension LibraryTree {
       nodes[identifier] = Node(
         identifier: identifier, parent: parent, stem: folderStem, fileExtension: nil,
         disambiguator: disambiguator, kind: .folder, version: "")
-    }
-
-    private func key(_ id: UInt?) -> String {
-      FolderKey.token(for: id)
     }
 
     // The *Name functions return sanitized stems, each sanitized once.
@@ -503,8 +512,10 @@ extension LibraryTree {
           items[node.identifier] = item
           resolved.append(item)
         }
-        resolved.sort(by: LibraryTree.displayOrder)
-        childIDs[parent] = resolved.map(\.identifier)
+        // Each identifier string is built once, for the tie-breaker.
+        let keyed = resolved.map { (item: $0, key: $0.identifier.stringValue) }
+          .sorted { LibraryTree.displayOrder($0.item, $0.key, $1.item, $1.key) }
+        childIDs[parent] = keyed.map(\.item.identifier)
       }
       return (items, childIDs)
     }
@@ -512,12 +523,16 @@ extension LibraryTree {
 
   /// Folders first, then documents; by name in Finder order; ties by
   /// identifier.
-  static func displayOrder(_ lhs: TreeItem, _ rhs: TreeItem) -> Bool {
+  /// `lhsKey` and `rhsKey` are the items' identifier strings, precomputed by
+  /// the caller.
+  static func displayOrder(
+    _ lhs: TreeItem, _ lhsKey: String, _ rhs: TreeItem, _ rhsKey: String
+  ) -> Bool {
     if lhs.isFolder != rhs.isFolder { return lhs.isFolder }
     switch lhs.name.localizedStandardCompare(rhs.name) {
     case .orderedAscending: return true
     case .orderedDescending: return false
-    case .orderedSame: return lhs.identifier.stringValue < rhs.identifier.stringValue
+    case .orderedSame: return lhsKey < rhsKey
     }
   }
 }
