@@ -58,8 +58,26 @@ Use the simulator's UDID from `xcrun simctl list devices available`, so the comm
 UDID=<udid of the simulator>
 xcrun simctl bootstatus "$UDID" -b
 xcrun simctl install "$UDID" build/DerivedData/Build/Products/Debug-iphonesimulator/Paperless.app
-xcrun simctl launch "$UDID" com.paulgessinger.swift-paperless
+APP_ID="$(xcodebuild -showBuildSettings -project swift-paperless.xcodeproj -target swift-paperless -configuration Debug -sdk iphonesimulator 2>/dev/null | awk -F' = ' '/^ +PRODUCT_BUNDLE_IDENTIFIER = / { print $2; exit }')"
+xcrun simctl launch "$UDID" "$APP_ID"
 xcrun simctl io "$UDID" screenshot build/screenshot.png
 ```
 
 `build/` is ignored by git, so the screenshot stays out of commits.
+
+`APP_ID` is the app's bundle id from the build settings: `com.paulgessinger.swift-paperless` by default, or your own prefix (next section).
+
+## Building on your own device
+
+The app's identity is build settings, not source: `Config/Shared/Identity.xcconfig` sets the bundle id prefix (`SWP_BUNDLE_ID_PREFIX`), the app group (`SWP_APP_GROUP`) and the keychain group (`SWP_KEYCHAIN_GROUP`, which is `$(AppIdentifierPrefix)$(SWP_BUNDLE_ID_PREFIX)`). The app is `<prefix>`, the extensions are `<prefix>.ShareExtension` and `<prefix>.FileProviderExtension`, and the entitlements and the Info.plist files take the group from the same settings. The Swift code reads the prefix and the group at run time from the Info.plist keys `SWPBundleIDPrefix` and `SWPAppGroupIdentifier` (see `Common/Sources/Common/AppIdentity.swift`), so no other Swift code names them. The only Swift literals of the upstream values are the fallbacks in `AppIdentity` (used when a process has no bundle id, as in the host package tests; a test checks they equal `Identity.xcconfig`) and two logger subsystems in `FileProviderExtension/` that are still to change.
+
+To sign a build for your own iPhone or iPad under your own Apple team:
+
+1. Copy `Config/Shared/Local.xcconfig.example` to `Config/Shared/Local.xcconfig`. Git ignores that file. `Base.xcconfig` includes it last, so it overrides project-level settings only: those in `Base.xcconfig` and `Identity.xcconfig`. A key that a target xcconfig sets (`Config/App/`, `Config/ShareExtension/`, `Config/FileProviderExtension/`) still wins over it, so set only the keys it is meant for: `DEVELOPMENT_TEAM`, `SWP_BUNDLE_ID_PREFIX`, `SWP_APP_GROUP` and, rarely, `SWP_KEYCHAIN_GROUP` (derived from the team prefix and the bundle id prefix by default).
+2. In it, set `DEVELOPMENT_TEAM` to your team id, `SWP_BUNDLE_ID_PREFIX` to a bundle id prefix you own (for example `com.example.swift-paperless`), and `SWP_APP_GROUP` to an app group id (for example `group.com.example.swift-paperless`).
+3. At developer.apple.com > Certificates, Identifiers & Profiles, register the app group, then three explicit App IDs: `<prefix>`, `<prefix>.ShareExtension` and `<prefix>.FileProviderExtension`. Turn on App Groups for all three and assign your group. Keychain Sharing needs no App ID capability; the keychain group is derived from your team prefix and bundle id prefix. With a paid team, automatic signing can register the App IDs for you on the first build, but you must still create the app group and assign it. A Mac Catalyst build of the app and the Share Extension uses the derived ids `maccatalyst.<prefix>` and `maccatalyst.<prefix>.ShareExtension` (`DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER`), so under your team register those too, with the same app group.
+4. Run `xcodegen generate`, open `swift-paperless.xcodeproj`, choose your device and build the `swift-paperless` scheme. Signing is automatic (`SWP_CODE_SIGN_STYLE = Automatic` in `Base.xcconfig`), so Xcode makes the development profiles.
+
+To check what a build will use, run `xcodebuild -showBuildSettings -project swift-paperless.xcodeproj -target FileProviderExtension | grep -E 'PRODUCT_BUNDLE_IDENTIFIER|SWP_'`.
+
+Some things stay upstream's on purpose. The release tooling (`fastlane/`, `scripts/beta_ci.sh`, `scripts/ExportOptions.plist`, `scripts/next_build_number.sh`) signs and uploads upstream's App Store app only, and `scripts/CIArchiveSigning.xcconfig` includes `Identity.xcconfig` (but not `Local.xcconfig`) and is passed with `-xcconfig`, so an archive always has upstream's team and identity. The screenshot tooling (`screenshots.toml`, `swpngx capture`) also keeps upstream's bundle id, like fastlane. `scripts/first_build.sh` and `user-defaults.py` follow your identity: the first reads the bundle id from the build settings, the second takes the group as an argument or from `SWP_APP_GROUP`. The URL scheme `x-paperless` is the same in every build, so with two builds on one device iOS picks one of them for those links.

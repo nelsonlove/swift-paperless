@@ -30,7 +30,7 @@ public final class OIDCClient {
 
   public private(set) var providers: [OIDCProvider] = []
 
-  private let logger = Logger(subsystem: "com.paulgessinger.swift-paperless", category: "OIDC")
+  private let logger = Logger(subsystem: AppIdentity.bundleIDPrefix, category: "OIDC")
 
   public init(baseURL: URL, redirectURI: URL, session: URLSession? = nil) throws(OIDCError) {
     self.baseURL = baseURL

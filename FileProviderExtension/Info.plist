@@ -10,7 +10,7 @@
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionFileProviderDocumentGroup</key>
-		<string>group.com.paulgessinger.swift-paperless</string>
+		<string>$(SWP_APP_GROUP)</string>
 		<key>NSExtensionFileProviderDownloadPipelineDepth</key>
 		<integer>2</integer>
 		<key>NSExtensionFileProviderSupportsEnumeration</key>
@@ -20,5 +20,9 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).PaperlessFileProviderExtension</string>
 	</dict>
+	<key>SWPAppGroupIdentifier</key>
+	<string>$(SWP_APP_GROUP)</string>
+	<key>SWPBundleIDPrefix</key>
+	<string>$(SWP_BUNDLE_ID_PREFIX)</string>
 </dict>
 </plist>

@@ -93,7 +93,7 @@ public struct LogView: View {
         try store
         .getEntries(at: position)
         .compactMap { $0 as? OSLogEntryLog }
-        .filter { $0.subsystem == Bundle.main.bundleIdentifier! }
+        .filter { $0.subsystem == AppIdentity.bundleIDPrefix }
         .map {
           Entry(date: $0.date, category: $0.category, message: $0.composedMessage, level: $0.level)
         }

@@ -12,11 +12,11 @@ import Foundation
 /// Provider) to reach shared containers and `UserDefaults`, and for what
 /// lives where in that container.
 ///
-/// The `.entitlements` files must repeat this literal — Xcode reads them before
-/// any Swift runs — but every Swift call site should reference this constant
-/// rather than hard-coding the string.
+/// The value is the build setting `SWP_APP_GROUP` (see ``AppIdentity``), which
+/// the `.entitlements` files use too. Every Swift call site should reference
+/// this constant rather than hard-coding the string.
 public enum AppGroup {
-  public static let identifier = "group.com.paulgessinger.swift-paperless"
+  public static let identifier = AppIdentity.appGroup
 
   /// The shared container; `nil` when the process has no entitlement for it.
   public static func container(identifier: String = identifier) -> URL? {

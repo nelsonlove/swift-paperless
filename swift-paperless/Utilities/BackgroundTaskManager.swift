@@ -14,6 +14,7 @@
 
 import AppShared
 import BackgroundTasks
+import Common
 import Foundation
 import os
 
@@ -21,9 +22,9 @@ import os
 enum BackgroundTaskManager {
   /// Cheap phases for every server. This is the task that runs when the app
   /// isn't opened for days.
-  static let refreshIdentifier = "com.paulgessinger.swift-paperless.sync.refresh"
+  static let refreshIdentifier = "\(AppIdentity.bundleIDPrefix).sync.refresh"
   /// Every phase, including the *Entire library* fill. Mostly runs overnight.
-  static let processingIdentifier = "com.paulgessinger.swift-paperless.sync.processing"
+  static let processingIdentifier = "\(AppIdentity.bundleIDPrefix).sync.processing"
 
   /// Registers both handlers. Must run before `didFinishLaunching` returns.
   static func registerTasks() {

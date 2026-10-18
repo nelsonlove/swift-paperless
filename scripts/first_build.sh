@@ -72,7 +72,30 @@ xcrun simctl bootstatus "$udid" -b
 # Start from a clean install: uninstalling removes the app's File Provider
 # domains, so Files enumerates the location afresh instead of showing what an
 # earlier build left in its cache.
-xcrun simctl uninstall "$udid" com.paulgessinger.swift-paperless || true
+# The bundle id comes from the build settings (Config/Shared/Identity.xcconfig,
+# or a developer's Local.xcconfig), not a literal. The whole output is read
+# before it is parsed, and xcodebuild's errors stay on stderr.
+if ! settings="$(xcodebuild -showBuildSettings \
+  -project swift-paperless.xcodeproj \
+  -scheme swift-paperless \
+  -configuration Debug \
+  -destination "platform=iOS Simulator,id=$udid" \
+  -scmProvider system \
+  ${packages[@]+"${packages[@]}"} \
+  -derivedDataPath "$derived")"; then
+  echo "error: xcodebuild -showBuildSettings failed; cannot read the app's bundle id" >&2
+  exit 1
+fi
+app_id="$(awk '
+  /^Build settings for action .* and target / { here = ($NF == "swift-paperless:"); next }
+  here && $1 == "PRODUCT_BUNDLE_IDENTIFIER" && $2 == "=" { print $3; exit }
+' <<<"$settings")"
+if [[ -z "$app_id" ]]; then
+  echo "error: xcodebuild -showBuildSettings printed no PRODUCT_BUNDLE_IDENTIFIER for swift-paperless" >&2
+  exit 1
+fi
+echo "App bundle id: $app_id"
+xcrun simctl uninstall "$udid" "$app_id" || true
 
 xcodebuild test \
   -project swift-paperless.xcodeproj \
