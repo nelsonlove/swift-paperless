@@ -123,6 +123,13 @@ targets:
         excludes:
           - "Info.plist"
       - path: swift-paperless/PrivacyInfo.xcprivacy
+    dependencies:
+      - package: AppShared
+      - package: Common
+      - package: DataModel
+      - package: FileProviderCore
+      - package: Networking
+      - package: Persistence
 
   swift-paperlessUITests:
     type: bundle.ui-testing
