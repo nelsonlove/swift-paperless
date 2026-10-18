@@ -75,12 +75,14 @@
       let database = fixture.database
       let serverID = MockLibrary.serverID
 
-      for _ in 0..<2 {
+      for run in 0..<2 {
         let report = try await MockLibrary.seed(
           database: database, contentStore: fixture.store, fileIndex: fixture.reclaimer,
           archiveURL: Self.pdf)
         #expect(report.documents == 15)
-        #expect(report.storedFiles == 3)
+        // The second run finds the files fresh and leaves them.
+        #expect(report.storedFiles == (run == 0 ? 3 : 0))
+        #expect(report.keptFiles == (run == 0 ? 0 : 3))
         #expect(report.missingFiles.isEmpty)
       }
 
@@ -101,6 +103,15 @@
       #expect(
         try await database.allDocumentIDs(serverID: serverID)
           == Set(MockLibrary.documents.map(\.id)))
+
+      let queryKey = QueryKey(serverID: serverID, filter: MockLibrary.listFilter)
+      #expect(try await database.queryFillCompletedAt(queryKey: queryKey, serverID: serverID) != nil)
+      let expectedOrder = try #require(
+        MockLibrary.order(MockLibrary.listFilter.resolvedSorting)).map(\.id)
+      let listed = try await database.queryDocuments(
+        queryKey: queryKey, serverID: serverID, limit: 100, offset: 0)
+      #expect(listed.map(\.id) == expectedOrder)
+      #expect(listed.allSatisfy { $0.document != nil })
 
       let stored = try await database.document(serverID: serverID, id: 1)
       #expect(stored == MockLibrary.documents.first { $0.id == 1 })
@@ -136,6 +147,70 @@
       #expect(report.storedFiles == 0)
       #expect(report.missingFiles.count == 3)
       #expect(try await fixture.database.documentCount(serverID: MockLibrary.serverID) == 15)
+    }
+
+    @Test("A seed that fails part way leaves no mock server behind")
+    func failedSeedRemovesServer() async throws {
+      let fixture = try Self.makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      let missing = fixture.root.appendingPathComponent("no-such.pdf")
+
+      await #expect(throws: (any Error).self) {
+        try await MockLibrary.seed(
+          database: fixture.database, contentStore: fixture.store,
+          fileIndex: fixture.reclaimer, archiveURL: { _ in missing })
+      }
+
+      #expect(try fixture.database.allConnections().isEmpty)
+      #expect(try await fixture.database.documentCount(serverID: MockLibrary.serverID) == 0)
+      #expect(
+        try await fixture.database.elements(TagRecord.self, serverID: MockLibrary.serverID)
+          .isEmpty)
+    }
+
+    @Test("Seeding keeps what the user set on the mock server")
+    func seedKeepsUserSettings() async throws {
+      let fixture = try Self.makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      try await MockLibrary.seed(
+        database: fixture.database, contentStore: nil, fileIndex: nil, archiveURL: { _ in nil })
+      var record = try #require(try fixture.database.connection(id: MockLibrary.serverID))
+      record.offlineBrowsingMode = OfflineBrowsingMode.entireLibrary.rawValue
+      record.syncOverCellular = true
+      record.identity = "made-up-identity"
+      record.friendlyName = "Renamed"
+      record.needsAuth = true
+      try fixture.database.upsertConnection(record)
+
+      try await MockLibrary.seed(
+        database: fixture.database, contentStore: nil, fileIndex: nil, archiveURL: { _ in nil })
+
+      let after = try #require(try fixture.database.connection(id: MockLibrary.serverID))
+      #expect(after.offlineBrowsingMode == OfflineBrowsingMode.entireLibrary.rawValue)
+      #expect(after.syncOverCellular)
+      #expect(after.identity == "made-up-identity")
+      // The fixture owns these.
+      #expect(after.friendlyName == MockLibrary.friendlyName)
+      #expect(after.url == MockLibrary.url)
+      #expect(!after.needsAuth)
+    }
+
+    @Test("The list order follows the sort its key is built from")
+    func listOrderMatchesSort() throws {
+      let added = try #require(
+        MockLibrary.order(.init(field: .added, order: .descending)))
+      #expect(added.map(\.added) == added.map(\.added).sorted { ($0 ?? .distantPast) > ($1 ?? .distantPast) })
+      let title = try #require(MockLibrary.order(.init(field: .title, order: .ascending)))
+      #expect(title.first?.title == "Account statement December 2025")
+      #expect(MockLibrary.order(.init(field: .asn, order: .ascending)) == nil)
+    }
+
+    @Test("Boolean launch flags read the same for every flag")
+    func launchFlags() {
+      #expect(LaunchArguments.flag("--x", in: ["--x"]) == true)
+      #expect(LaunchArguments.flag("--x", in: ["--x=no"]) == false)
+      #expect(LaunchArguments.flag("--x", in: ["--x=0", "--x=yes"]) == true)
+      #expect(LaunchArguments.flag("--x", in: ["--xy", "--y"]) == nil)
     }
 
     @Test("A fresh launch's reclaim keeps the seeded files")

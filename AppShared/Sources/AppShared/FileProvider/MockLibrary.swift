@@ -27,27 +27,20 @@
     /// The launch argument that asks the app to seed the library.
     public static let launchArgument = "--seed-mock-library"
 
-    /// Whether `arguments` ask for the seed, in the same form as the app's
-    /// other launch arguments: the bare flag, or `--seed-mock-library=<bool>`.
+    /// Whether `arguments` ask for the seed: the bare flag, or
+    /// `--seed-mock-library=<bool>`, read like the app's other boolean flags.
     public static func isRequested(_ arguments: [String] = ProcessInfo.processInfo.arguments)
       -> Bool
     {
-      var requested = false
-      for argument in arguments {
-        if argument == launchArgument {
-          requested = true
-        } else if argument.hasPrefix("\(launchArgument)=") {
-          let value = argument.dropFirst(launchArgument.count + 1).lowercased()
-          requested = !(value == "0" || value == "false" || value == "no")
-        }
-      }
-      return requested
+      LaunchArguments.flag(launchArgument, in: arguments) ?? false
     }
 
     // MARK: - Server
 
     public static let serverID = UUID(uuidString: "6D0C4B1E-5EED-4A11-8000-00000000C0DE")!
-    public static let url = URL(string: "https://paperless.example.com/api/")!
+    /// A reserved name that never resolves (RFC 2606), so no request, and no
+    /// token, ever leaves the device.
+    public static let url = URL(string: "https://paperless.invalid/api/")!
     public static let friendlyName = "Mock Paperless"
     public static let user = User(id: 1, isSuperUser: true, username: "demo")
     /// Known, so `ApiRepository` builds without probing a server that is not there.
@@ -214,7 +207,43 @@
       public var documents = 0
       public var removedDocuments = 0
       public var storedFiles = 0
+      /// Files already fresh in the index, left in place.
+      public var keptFiles = 0
       public var missingFiles: [String] = []
+    }
+
+    /// The filter the seeded list is stored under, and its sort. The app's
+    /// default list when its default sort is one the seed can order by;
+    /// otherwise the default pinned to newest added first, so that the key and
+    /// the order always agree.
+    static var listFilter: FilterState {
+      var filter = FilterState.default
+      if order(filter.resolvedSorting) == nil {
+        filter.sorting = FilterState.Sorting(field: .added, order: .descending)
+      }
+      return filter
+    }
+
+    /// `documents` in the order `sorting` asks for, or `nil` for a sort field
+    /// the seed does not order by. Ties break on the id.
+    static func order(_ sorting: FilterState.Sorting) -> [DataModel.Document]? {
+      let before: (DataModel.Document, DataModel.Document) -> Bool
+      switch sorting.field {
+      case .added:
+        before = { ($0.added ?? .distantPast) < ($1.added ?? .distantPast) }
+      case .created:
+        before = { $0.created < $1.created }
+      case .modified:
+        before = { ($0.modified ?? .distantPast) < ($1.modified ?? .distantPast) }
+      case .title:
+        before = { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+      default:
+        return nil
+      }
+      let ascending = documents.sorted { lhs, rhs in
+        before(lhs, rhs) || (!before(rhs, lhs) && lhs.id < rhs.id)
+      }
+      return sorting.order.reverse ? Array(ascending.reversed()) : ascending
     }
 
     /// Write the library into `database` and the archives into `contentStore`,
@@ -222,8 +251,15 @@
     /// them is a cache hit.
     ///
     /// Idempotent: the rows are upserted by fixed ids, the element tables and
-    /// the default list are replaced, documents of this server that are not in
-    /// the fixtures are deleted, and the files are rewritten in place.
+    /// the seeded list are replaced, documents of this server that are not in
+    /// the fixtures are deleted, and a file already fresh in the index is left
+    /// alone. On an existing server row only the fields the fixture owns are
+    /// rewritten; the offline mode, cellular sync, identity and extra headers
+    /// the user set are kept.
+    ///
+    /// Not one transaction (the cache tables are written through their own
+    /// accessors), so a step that throws removes the server row, which cascades
+    /// to every cache row of it; the next seed starts again from nothing.
     ///
     /// - Parameter archiveURL: where the PDF named by a fixture's
     ///   `resourceName` is; `nil` skips that file and reports it missing.
@@ -234,10 +270,43 @@
       fileIndex: (any FileIndex)?,
       archiveURL: @Sendable (String) -> URL?
     ) async throws -> Report {
-      var report = Report()
-
       // The cache rows FK-reference the server row, so it goes first.
-      try database.upsertConnection(connection.toRecord(needsAuth: false))
+      try database.upsertConnection(serverRecord(existing: try database.connection(id: serverID)))
+      do {
+        return try await seedContent(
+          database: database, contentStore: contentStore, fileIndex: fileIndex,
+          archiveURL: archiveURL)
+      } catch {
+        Logger.shared.error("Mock library seed failed, removing its server row: \(error)")
+        do {
+          try database.deleteConnection(id: serverID)
+        } catch {
+          Logger.shared.error("Removing the mock library's server row failed: \(error)")
+        }
+        throw error
+      }
+    }
+
+    /// The fixture's server row, keeping what the user may have set on an
+    /// existing one.
+    static func serverRecord(existing: ConnectionRecord?) -> ConnectionRecord {
+      var record = connection.toRecord(needsAuth: false)
+      if let existing {
+        record.offlineBrowsingMode = existing.offlineBrowsingMode
+        record.syncOverCellular = existing.syncOverCellular
+        record.identity = existing.identity
+        record.extraHeaders = existing.extraHeaders
+      }
+      return record
+    }
+
+    private static func seedContent(
+      database: Database,
+      contentStore: ContentStore?,
+      fileIndex: (any FileIndex)?,
+      archiveURL: @Sendable (String) -> URL?
+    ) async throws -> Report {
+      var report = Report()
 
       try await database.replaceElements(tags, of: TagRecord.self, serverID: serverID)
       try await database.replaceElements(
@@ -252,17 +321,17 @@
       try await database.deleteDocuments(serverID: serverID, removedIDs: stale.sorted())
       report.removedDocuments = stale.count
 
-      try await database.upsertDocuments(documents, serverID: serverID)
-      report.documents = documents.count
-
-      // The default list, so the app shows the documents before any sync. In
-      // the app's default order (added, newest first).
-      let queryKey = QueryKey(serverID: serverID, filter: .default)
+      // The list write upserts the document rows too. Stored as complete, so
+      // the app shows the documents before any sync and does not refill.
+      let filter = listFilter
+      let ordered = order(filter.resolvedSorting) ?? documents
+      let queryKey = QueryKey(serverID: serverID, filter: filter)
       let basis = try await database.queryWriteBasis(queryKey: queryKey, serverID: serverID)
-      let ordered = documents.sorted { ($0.added ?? $0.created) > ($1.added ?? $1.created) }
       try await database.replaceQueryPage(
         queryKey: queryKey, serverID: serverID, documents: ordered,
         totalCount: UInt(ordered.count), basis: basis)
+      try await database.markQueryFillComplete(queryKey: queryKey, serverID: serverID)
+      report.documents = ordered.count
 
       guard let contentStore else {
         report.missingFiles = archiveFixtures.map(\.resourceName)
@@ -278,7 +347,22 @@
         }
         let key = ContentStore.Key(
           serverID: serverID, versionID: document.currentVersionID, kind: .archive)
-        try contentStore.storeData(try Data(contentsOf: source), for: key)
+        if let fileIndex, try await fileIndex.isFresh(key, modified: modified),
+          contentStore.exists(key)
+        {
+          report.keptFiles += 1
+          continue
+        }
+        // A copy, moved into place, so the PDF is never read into memory.
+        let temp = FileManager.default.temporaryDirectory
+          .appendingPathComponent("mock-\(UUID().uuidString).pdf")
+        try FileManager.default.copyItem(at: source, to: temp)
+        do {
+          try contentStore.store(key, movingFrom: temp)
+        } catch {
+          try? FileManager.default.removeItem(at: temp)
+          throw error
+        }
         try await fileIndex?.recordStore(
           key, documentID: document.id, size: contentStore.size(of: key) ?? 0,
           modified: modified, checksum: nil, storedAt: Date())
