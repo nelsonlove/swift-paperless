@@ -44,6 +44,11 @@ xcodegen generate
 
 xcrun simctl bootstatus "$udid" -b
 
+# Start from a clean install: uninstalling removes the app's File Provider
+# domains, so Files enumerates the location afresh instead of showing what an
+# earlier build left in its cache.
+xcrun simctl uninstall "$udid" com.paulgessinger.swift-paperless || true
+
 xcodebuild test \
   -project swift-paperless.xcodeproj \
   -scheme swift-paperlessUITests \
