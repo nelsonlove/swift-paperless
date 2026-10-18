@@ -21,7 +21,8 @@ public struct TreeItem: Hashable, Sendable {
   public var name: String
   public var kind: Kind
   /// Changes when the item's content changes. For documents it covers the
-  /// served variant, the current version id and `modified`; for folders it is
+  /// variant actually served (the original when there is no archive), the
+  /// current version id and `modified`; for folders it is
   /// empty (a folder's name and parent are compared on their own).
   public var version: String
 
@@ -273,7 +274,8 @@ extension LibraryTree {
       let stem = FileNaming.stem(for: document, untitled: labels.untitledDocument)
       let fileExtension = FileNaming.fileExtension(for: document, content: settings.content)
       let modified = document.modified.map { String($0.timeIntervalSinceReferenceDate) } ?? "-"
-      let version = "\(settings.content.rawValue):\(document.currentVersionID)/\(modified)"
+      let served = FileNaming.servedContent(for: document, requested: settings.content)
+      let version = "\(served.rawValue):\(document.currentVersionID)/\(modified)"
 
       func addDocument(_ identifier: ItemIdentifier, parent: ItemIdentifier) {
         nodes[identifier] = Node(

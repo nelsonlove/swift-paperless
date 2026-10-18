@@ -263,6 +263,20 @@ struct LibraryTreeTests {
     #expect(a.version != o.version)
   }
 
+  @Test("A document with no archive gets the original's name and version under archive")
+  func noArchive() throws {
+    let documents = [
+      Fixtures.document(1, "Photo", originalFileName: "IMG_0001.heic", archivedFileName: nil)
+    ]
+    let archive = Fixtures.tree(settings(.flat), documents: documents)
+    let original = Fixtures.tree(settings(.flat, content: .original), documents: documents)
+    let a = try #require(archive.item(for: .document(1)))
+    let o = try #require(original.item(for: .document(1)))
+    #expect(a.name == "Photo.heic")
+    #expect(a.version.hasPrefix("original:"))
+    #expect(a.version == o.version)
+  }
+
   @Test("Duplicate documents in the input appear once")
   func duplicateInput() {
     let documents = [Fixtures.document(1, "One"), Fixtures.document(1, "One again")]

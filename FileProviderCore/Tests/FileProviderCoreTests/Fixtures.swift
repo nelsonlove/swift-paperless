@@ -43,12 +43,12 @@ enum Fixtures {
   static func document(
     _ id: UInt, _ title: String, correspondent: UInt? = nil, type: UInt? = nil,
     tags: [UInt] = [], year: Int = 2026, modified: Date? = nil,
-    originalFileName: String? = nil
+    originalFileName: String? = nil, archivedFileName: String? = "archive.pdf"
   ) -> Document {
     Document(
       id: id, title: title, documentType: type, correspondent: correspondent,
       created: date(year), tags: tags, modified: modified ?? date(year, 2, 1),
-      originalFileName: originalFileName)
+      originalFileName: originalFileName, archivedFileName: archivedFileName)
   }
 
   static let correspondents = [

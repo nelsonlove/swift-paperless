@@ -82,6 +82,15 @@ struct FileNamingTests {
     #expect(FileNaming.fileName(for: odd, content: .original) == "Odd.pdf")
   }
 
+  @Test("A document with no archive is served as its original, even for archive")
+  func noArchive() {
+    let photo = Fixtures.document(
+      5, "Photo", originalFileName: "IMG_0001.heic", archivedFileName: nil)
+    #expect(FileNaming.servedContent(for: photo, requested: .archive) == .original)
+    #expect(FileNaming.fileName(for: photo, content: .archive) == "Photo.heic")
+    #expect(FileNaming.fileName(for: photo, content: .original) == "Photo.heic")
+  }
+
   @Test("Colliding names all get the id suffix; others are untouched")
   func collisions() {
     let entries = [

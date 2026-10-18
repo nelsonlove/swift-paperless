@@ -75,13 +75,24 @@ public enum FileNaming {
     sanitize(document.title) ?? "\(untitled) \(document.id)"
   }
 
+  /// The variant the server actually serves for a document. A document with
+  /// no archive (`archivedFileName == nil`, for example an image or office
+  /// file paperless did not convert) gets its original even when the archive
+  /// is asked for, as `ApiRepository` does for downloads.
+  public static func servedContent(
+    for document: Document, requested: FileProviderSettings.Content
+  ) -> FileProviderSettings.Content {
+    requested == .archive && document.archivedFileName == nil ? .original : requested
+  }
+
   /// The extension for a document's file: `pdf` for the archive; the original
-  /// file's extension for the original, falling back to `pdf` when the server
-  /// gave no usable original file name.
+  /// file's extension for the original (also when the archive is asked for
+  /// but the document has none), falling back to `pdf` when the server gave
+  /// no usable original file name.
   public static func fileExtension(
     for document: Document, content: FileProviderSettings.Content
   ) -> String {
-    switch content {
+    switch servedContent(for: document, requested: content) {
     case .archive:
       return pdfExtension
     case .original:
