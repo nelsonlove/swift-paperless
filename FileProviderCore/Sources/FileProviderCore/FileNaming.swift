@@ -116,8 +116,7 @@ public enum FileNaming {
   }
 
   static func compose(stem: String, fileExtension: String?) -> String {
-    guard let fileExtension else { return stem }
-    return "\(stem).\(fileExtension)"
+    compose(stem: stem, suffix: "", fileExtension: fileExtension)
   }
 
   /// One entry in a folder, for collision handling.
@@ -126,46 +125,116 @@ public enum FileNaming {
     public var stem: String
     /// The extension, or `nil` for a folder.
     public var fileExtension: String?
-    /// The text inside the collision suffix ` (#<disambiguator>)`, unique
-    /// within the folder (a document id, or a folder's key).
+    /// The text inside the usual collision suffix ` (#<disambiguator>)` (a
+    /// document id, or a folder's key).
     public var disambiguator: String
+    /// A key unique within the folder (the item identifier's string), used
+    /// for the fallback suffix and to order the last resort.
+    public var uniqueKey: String
+    /// Whether the entry keeps its name when it collides with entries that do
+    /// not (the browse roots); the others take the suffix.
+    public var keepsName: Bool
 
-    public init(stem: String, fileExtension: String?, disambiguator: String) {
+    public init(
+      stem: String, fileExtension: String?, disambiguator: String,
+      uniqueKey: String? = nil, keepsName: Bool = false
+    ) {
       self.stem = stem
       self.fileExtension = fileExtension
       self.disambiguator = disambiguator
+      self.uniqueKey = uniqueKey ?? disambiguator
+      self.keepsName = keepsName
     }
   }
 
-  /// Final names for the entries of one folder, in the same order.
+  /// The longest final name, in UTF-8 bytes (the APFS limit).
+  public static let maxNameBytes = 255
+
+  /// Final names for the entries of one folder, in the same order. The names
+  /// are always unique (compared case-insensitively after NFC) and at most
+  /// ``maxNameBytes`` long; the stem is cut on a character boundary to make
+  /// room for a suffix and the extension.
   ///
-  /// Names are compared case-insensitively after NFC. Every entry whose name
-  /// collides with another gets the suffix ` (#<disambiguator>)` before its
-  /// extension; all colliding entries get it, not all but one, so the result
+  /// First, every entry whose name collides with another gets the suffix
+  /// ` (#<disambiguator>)` before its extension, repeated until no new entry
+  /// needs one. All colliding entries get it, not all but one, so this step
   /// does not depend on input order and a name changes only when its own
-  /// collision state changes. The pass repeats until no names collide (a title
-  /// can itself end in a suffix-like text).
+  /// collision state changes. An entry with `keepsName` is left alone when it
+  /// is the only such entry in its collision group.
+  ///
+  /// What still collides after that (a title that mimics a suffix, or a
+  /// repeated disambiguator) is settled in a fixed order: `keepsName` entries
+  /// first, then by `uniqueKey`. The first keeps its name; each later one gets
+  /// ` (#<uniqueKey>)`, with a counter appended if even that is taken.
   public static func resolveCollisions(_ entries: [Entry]) -> [String] {
-    var stems = entries.map(\.stem)
-    // The disambiguators are unique, so each pass makes every colliding group
-    // distinct; a few passes settle any title that mimics a suffix.
-    for _ in 0..<8 {
+    var suffixes = [String](repeating: "", count: entries.count)
+    func name(_ index: Int) -> String {
+      compose(
+        stem: entries[index].stem, suffix: suffixes[index],
+        fileExtension: entries[index].fileExtension)
+    }
+    func collisionGroups() -> [[Int]] {
       var groups: [String: [Int]] = [:]
       for index in entries.indices {
-        let name = compose(stem: stems[index], fileExtension: entries[index].fileExtension)
-        groups[comparisonKey(name), default: []].append(index)
+        groups[comparisonKey(name(index)), default: []].append(index)
       }
-      let colliding = groups.values.filter { $0.count > 1 }
-      if colliding.isEmpty { break }
-      for group in colliding {
-        for index in group {
-          stems[index] += " (#\(entries[index].disambiguator))"
+      return groups.values.filter { $0.count > 1 }
+    }
+
+    // Entries only ever move from no suffix to a suffix, so this ends after
+    // at most `entries.count` rounds.
+    var changed = true
+    while changed {
+      changed = false
+      for group in collisionGroups() {
+        let keepers = group.filter { entries[$0].keepsName && suffixes[$0].isEmpty }
+        for index in group where suffixes[index].isEmpty {
+          if keepers.count == 1, keepers[0] == index { continue }
+          suffixes[index] = " (#\(entries[index].disambiguator))"
+          changed = true
         }
       }
     }
-    return entries.indices.map {
-      compose(stem: stems[$0], fileExtension: entries[$0].fileExtension)
+
+    let remaining = collisionGroups().flatMap { $0 }
+    if remaining.isEmpty {
+      return entries.indices.map(name)
     }
+
+    let remainingSet = Set(remaining)
+    var used = Set(
+      entries.indices.filter { !remainingSet.contains($0) }.map { comparisonKey(name($0)) })
+    let ordered = remaining.sorted { lhs, rhs in
+      if entries[lhs].keepsName != entries[rhs].keepsName { return entries[lhs].keepsName }
+      if entries[lhs].uniqueKey != entries[rhs].uniqueKey {
+        return entries[lhs].uniqueKey < entries[rhs].uniqueKey
+      }
+      return lhs < rhs
+    }
+    for index in ordered {
+      if used.insert(comparisonKey(name(index))).inserted { continue }
+      let key = entries[index].uniqueKey
+      // Each counter gives a different name, and only finitely many are
+      // taken, so this ends.
+      var counter = 1
+      repeat {
+        suffixes[index] = counter == 1 ? " (#\(key))" : " (#\(key) \(counter))"
+        counter += 1
+      } while !used.insert(comparisonKey(name(index))).inserted
+    }
+    return entries.indices.map(name)
+  }
+
+  /// Joins a stem, a suffix and an extension, cutting the stem on a character
+  /// boundary so the whole name fits in ``maxNameBytes``.
+  static func compose(stem: String, suffix: String, fileExtension: String?) -> String {
+    let tail = suffix + (fileExtension.map { ".\($0)" } ?? "")
+    let budget = max(0, maxNameBytes - tail.utf8.count)
+    var cut = truncate(stem, maxBytes: budget)
+    if cut.utf8.count < stem.utf8.count {
+      cut = cut.trimmingCharacters(in: .whitespaces)
+    }
+    return truncate(cut + tail, maxBytes: maxNameBytes)
   }
 
   /// The key two names are compared by: NFC, then case-folded.

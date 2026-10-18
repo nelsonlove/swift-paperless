@@ -135,6 +135,54 @@ struct FileNamingTests {
     #expect(Set(names.map(FileNaming.comparisonKey)).count == 3)
   }
 
+  @Test("A crafted chain of suffix lookalikes still ends with unique names")
+  func craftedChain() {
+    // "A", "A", "A (#1)", "A (#1) (#1)", … all with disambiguator "1", so the
+    // usual suffix only reproduces the next title.
+    var entries = [
+      FileNaming.Entry(
+        stem: "A", fileExtension: "pdf", disambiguator: "1",
+        uniqueKey: "doc:100")
+    ]
+    for level in 0..<12 {
+      let stem = "A" + String(repeating: " (#1)", count: level)
+      entries.append(
+        FileNaming.Entry(
+          stem: stem, fileExtension: "pdf", disambiguator: "1",
+          uniqueKey: "doc:\(level)"))
+    }
+    let names = FileNaming.resolveCollisions(entries)
+    #expect(names.count == 13)
+    #expect(Set(names.map(FileNaming.comparisonKey)).count == names.count)
+    #expect(names.allSatisfy { $0.utf8.count <= FileNaming.maxNameBytes })
+    #expect(FileNaming.resolveCollisions(entries.reversed()) == names.reversed())
+  }
+
+  @Test("Final names stay within 255 bytes with a suffix and a long extension")
+  func lengthCap() throws {
+    let stem = try #require(FileNaming.sanitize(String(repeating: "ü", count: 300)))
+    let entries = (1...3).map {
+      FileNaming.Entry(
+        stem: stem, fileExtension: "abcdefghijklmnop",
+        disambiguator: String(UInt.max - UInt($0)), uniqueKey: "doc:\($0)")
+    }
+    let names = FileNaming.resolveCollisions(entries)
+    #expect(Set(names).count == 3)
+    for name in names {
+      #expect(name.utf8.count <= FileNaming.maxNameBytes)
+      #expect(name.hasSuffix(").abcdefghijklmnop"))
+    }
+  }
+
+  @Test("An entry that keeps its name wins; the others take the suffix")
+  func keepsName() {
+    let entries = [
+      FileNaming.Entry(stem: "By tag", fileExtension: nil, disambiguator: "7"),
+      FileNaming.Entry(stem: "By tag", fileExtension: nil, disambiguator: "tag", keepsName: true),
+    ]
+    #expect(FileNaming.resolveCollisions(entries) == ["By tag (#7)", "By tag"])
+  }
+
   @Test("NFC and NFD spellings of one name collide")
   func collisionsAcrossNormalization() {
     let entries = [

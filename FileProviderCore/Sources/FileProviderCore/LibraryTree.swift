@@ -232,6 +232,9 @@ extension LibraryTree {
     var disambiguator: String
     var kind: TreeItem.Kind
     var version: String
+    /// Browse roots keep their label; a canonical folder of the same name
+    /// takes the collision suffix instead.
+    var keepsName = false
   }
 
   private struct Builder {
@@ -266,6 +269,7 @@ extension LibraryTree {
           }
         addFolder(
           .browseRoot(browse), parent: .root, name: name, disambiguator: browse.rawValue)
+        nodes[.browseRoot(browse)]?.keepsName = true
       }
     }
 
@@ -439,13 +443,13 @@ extension LibraryTree {
       }
 
       var childIDs: [ItemIdentifier: [ItemIdentifier]] = [:]
-      for (parent, var children) in grouped {
-        // A stable input order; the names do not depend on it.
-        children.sort { $0.identifier.rawValue < $1.identifier.rawValue }
+      for (parent, children) in grouped {
+        // The names do not depend on the order of `children`.
         let names = FileNaming.resolveCollisions(
           children.map {
             FileNaming.Entry(
-              stem: $0.stem, fileExtension: $0.fileExtension, disambiguator: $0.disambiguator)
+              stem: $0.stem, fileExtension: $0.fileExtension, disambiguator: $0.disambiguator,
+              uniqueKey: $0.identifier.rawValue, keepsName: $0.keepsName)
           })
         var resolved: [TreeItem] = []
         for (node, name) in zip(children, names) {

@@ -280,6 +280,18 @@ struct LibraryTreeTests {
     #expect(tree.names(.root) == ["Acme Utilities (#1)", "Acme Utilities (#5)"])
   }
 
+  @Test("A canonical folder named like a browse root takes the suffix")
+  func browseRootKeepsLabel() {
+    let documents = [Fixtures.document(1, "Label sheet", correspondent: 9)]
+    var correspondents = Fixtures.correspondents
+    correspondents.append(Fixtures.correspondent(9, "By tag"))
+    let tree = LibraryTree(
+      documents: documents, tags: [], correspondents: correspondents, documentTypes: [],
+      settings: settings(.correspondent, browse: [.tag]))
+    #expect(tree.item(for: .browseRoot(.tag))?.name == "By tag")
+    #expect(tree.item(for: .folder(.correspondent(9)))?.name == "By tag (#9)")
+  }
+
   @Test("Original content uses the original's extension and changes the version")
   func originalContent() throws {
     let documents = [Fixtures.document(1, "Photo", originalFileName: "IMG_0001.heic")]
