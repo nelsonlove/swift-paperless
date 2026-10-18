@@ -33,7 +33,7 @@ public final class FilterModel {
   public nonisolated static func restoredFilterState() -> FilterState {
     Logger.shared.trace("Loading FilterState")
     guard
-      let data = UserDefaults(suiteName: AppGroup.identifier)?.object(
+      let data = UserDefaults.group.object(
         forKey: "GlobalFilterState") as? Data
     else {
       Logger.shared.trace("No default")
@@ -58,7 +58,7 @@ public final class FilterModel {
     /// Debug seam for the mock library: forget the saved filter, so the next
     /// document list opens with the default one.
     public nonisolated static func clearSavedFilterState() {
-      UserDefaults(suiteName: AppGroup.identifier)?.removeObject(
+      UserDefaults.group.removeObject(
         forKey: "GlobalFilterState")
     }
   #endif
@@ -76,7 +76,7 @@ public final class FilterModel {
           "Encoding filter state to UserDefaults failed: \(String(describing: self.filterState))")
         return
       }
-      UserDefaults(suiteName: AppGroup.identifier)?.set(
+      UserDefaults.group.set(
         s, forKey: "GlobalFilterState")
 
       Logger.shared.trace(

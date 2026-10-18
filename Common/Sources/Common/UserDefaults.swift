@@ -11,8 +11,10 @@ import os
 let logger = Logger(subsystem: AppIdentity.bundleIDPrefix, category: "UserDefaults")
 
 extension UserDefaults {
-  @MainActor
-  public static let group = UserDefaults(suiteName: AppGroup.identifier)!
+  /// The app group's suite. `UserDefaults` is documented as thread-safe but is
+  /// not marked `Sendable`, so the constant opts out of the isolation check
+  /// rather than binding every caller to the main actor.
+  nonisolated(unsafe) public static let group = UserDefaults(suiteName: AppGroup.identifier)!
 
   public func load<Value>(_: Value.Type, key: String, storage: UserDefaults = .standard) throws
     -> Value? where Value: Decodable
