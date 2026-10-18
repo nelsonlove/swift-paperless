@@ -20,9 +20,9 @@
   ///
   /// The first signal for a server is sent at once. Signals that arrive within
   /// the interval after it are folded into one trailing signal at the end of
-  /// the interval, so a burst of writes (a sync's end, a reconcile, an edit)
-  /// costs the extension one change enumeration, and the last change of the
-  /// burst is never lost.
+  /// the interval, so a burst of writes costs the extension at most two change
+  /// enumerations per interval (the leading one and the trailing one), and the
+  /// last change of the burst is never lost.
   ///
   /// The system call only exists on iOS. On Mac Catalyst and on macOS (where
   /// the package is host-tested) the default ``send`` does nothing: the

@@ -42,7 +42,11 @@ public final class AppStack {
     /// Lazy, so only the app, which starts it, keeps File Provider domains;
     /// the extensions never add or remove one.
     public private(set) lazy var fileProviderDomainSync = FileProviderDomainSync(
-      connectionManager: connectionManager)
+      connectionManager: connectionManager, database: database)
+
+    /// Signals the File Provider after this process writes the library. Only
+    /// where the extension exists, and only over the database on disk.
+    private var fileProviderLibraryWatch: FileProviderLibraryWatch?
   #endif
 
   /// - Parameter contentStore: where downloaded files live; `nil` caches no
@@ -64,10 +68,15 @@ public final class AppStack {
       database: database, manager: connectionManager, suspension: suspension,
       contentReclaimer: contentReclaimer)
     self.sessionRegistry = sessionRegistry
-    #if canImport(FileProvider)
+    #if canImport(FileProvider) && os(iOS) && !targetEnvironment(macCatalyst)
       // Every process that writes the cache (the app, the App Intents and the
       // Share Extension) tells the File Provider about it.
-      sessionRegistry.onLibraryChanged = { FileProviderSignaler.shared.signal(serverID: $0) }
+      if database.isOnDisk {
+        let watch = FileProviderLibraryWatch(
+          database: database, connectionManager: connectionManager)
+        watch.start()
+        fileProviderLibraryWatch = watch
+      }
     #endif
     suspension.onExpire = { [weak sessionRegistry] in sessionRegistry?.cancelAllWork() }
     // The rows went with the server; its files are only found by the walk.

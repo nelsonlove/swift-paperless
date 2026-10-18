@@ -27,7 +27,7 @@
       signaler.signal(serverID: server)
       signaler.signal(serverID: server)
 
-      try await eventually { await sent.ids.count == 2 }
+      try await waitUntil { await sent.ids.count == 2 }
       try await Task.sleep(for: .milliseconds(400))
       #expect(await sent.ids == [server, server])
     }
@@ -42,7 +42,7 @@
       signaler.signal(serverID: first)
       signaler.signal(serverID: second)
 
-      try await eventually { await sent.ids.count == 2 }
+      try await waitUntil { await sent.ids.count == 2 }
       #expect(Set(await sent.ids) == [first, second])
     }
 
@@ -53,26 +53,10 @@
       let server = UUID()
 
       signaler.signal(serverID: server)
-      try await eventually { await sent.ids.count == 1 }
+      try await waitUntil { await sent.ids.count == 1 }
       try await Task.sleep(for: .milliseconds(100))
       signaler.signal(serverID: server)
-      try await eventually { await sent.ids.count == 2 }
-    }
-  }
-
-  /// Polls `condition` until it holds; records an issue after five seconds.
-  @MainActor
-  func eventually(
-    _ condition: () async -> Bool,
-    sourceLocation: SourceLocation = #_sourceLocation
-  ) async throws {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while await !condition() {
-      if ContinuousClock.now > deadline {
-        Issue.record("timed out waiting for condition", sourceLocation: sourceLocation)
-        return
-      }
-      try await Task.sleep(for: .milliseconds(5))
+      try await waitUntil { await sent.ids.count == 2 }
     }
   }
 

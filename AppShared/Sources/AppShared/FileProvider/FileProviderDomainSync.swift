@@ -9,6 +9,7 @@
 
   import FileProviderCore
   import Foundation
+  import Persistence
   import os
 
   #if os(iOS) && !targetEnvironment(macCatalyst)
@@ -30,28 +31,53 @@
   /// again (never removed, which would drop its files, Recents and bookmarks).
   /// The decision is ``DomainReconcile``'s; this type only applies it.
   ///
+  /// The server list each pass works from is a fresh read of the database, not
+  /// an in-memory copy, so a failed hydrate cannot pass for "no servers". A
+  /// pass whose read fails changes nothing, and a database that is not on disk
+  /// (the in-memory bootstrap fallback) never removes a domain.
+  ///
   /// Only the app runs this. The extensions never add or remove domains.
   @MainActor
   public final class FileProviderDomainSync {
-    private let connections: @MainActor () -> [UUID: StoredConnection]
+    private let trigger: @MainActor () -> Void
+    private let servers: @MainActor () async throws -> [UUID: StoredConnection]
+    private let allowsRemoval: Bool
     private let manager: (any FileProviderDomainManaging)?
     private var observationTask: Task<Void, Never>?
 
     /// - Parameters:
-    ///   - connections: The configured servers; read inside observation
-    ///     tracking, so a change to what it reads triggers a reconcile.
+    ///   - trigger: Read inside observation tracking; a change to what it
+    ///     reads starts a pass.
+    ///   - servers: The configured servers, read at the start of each pass.
+    ///     A throw skips the pass.
+    ///   - allowsRemoval: Whether `servers` reads the real database, so a
+    ///     server missing from it is really gone.
     ///   - manager: The system's domains; `nil` where there is no File
     ///     Provider extension, which makes the sync do nothing.
     public init(
-      connections: @escaping @MainActor () -> [UUID: StoredConnection],
+      trigger: @escaping @MainActor () -> Void,
+      servers: @escaping @MainActor () async throws -> [UUID: StoredConnection],
+      allowsRemoval: Bool,
       manager: (any FileProviderDomainManaging)? = FileProviderDomainSync.systemManager
     ) {
-      self.connections = connections
+      self.trigger = trigger
+      self.servers = servers
+      self.allowsRemoval = allowsRemoval
       self.manager = manager
     }
 
-    public convenience init(connectionManager: ConnectionManager) {
-      self.init(connections: { [weak connectionManager] in connectionManager?.connections ?? [:] })
+    /// Wakes on `connectionManager`'s server list and reads the rows from
+    /// `database`.
+    public convenience init(connectionManager: ConnectionManager, database: Database) {
+      self.init(
+        trigger: { [weak connectionManager] in _ = connectionManager?.connections },
+        servers: {
+          let records = try database.allConnections()
+          return Dictionary(
+            records.map { ($0.id, StoredConnection(record: $0)) },
+            uniquingKeysWith: { first, _ in first })
+        },
+        allowsRemoval: database.isOnDisk)
     }
 
     deinit {
@@ -76,14 +102,13 @@
       observationTask = Task { @MainActor [weak self] in
         while !Task.isCancelled {
           let (stream, continuation) = AsyncStream<Void>.makeStream()
-          let servers = withObservationTracking {
-            self?.connections()
+          withObservationTracking {
+            self?.trigger()
           } onChange: {
             continuation.yield()
             continuation.finish()
           }
-          guard let self, let servers else { return }
-          await reconcile(servers: servers)
+          await self?.reconcile()
           for await _ in stream { break }
         }
       }
@@ -94,15 +119,19 @@
       observationTask = nil
     }
 
-    /// Reconcile once against the current servers.
+    /// One pass against a fresh read of the servers.
     public func reconcile() async {
-      await reconcile(servers: connections())
-    }
-
-    private func reconcile(servers: [UUID: StoredConnection]) async {
       guard let manager else { return }
+      let current: [UUID: StoredConnection]
+      do {
+        current = try await servers()
+      } catch {
+        Logger.fileProvider.error(
+          "Reading the servers failed; File Provider domains left as they are: \(error)")
+        return
+      }
       let wanted = Dictionary(
-        uniqueKeysWithValues: servers.map { ($0.key.uuidString, Self.displayName(for: $0.value)) })
+        uniqueKeysWithValues: current.map { ($0.key.uuidString, Self.displayName(for: $0.value)) })
       let existing: [DomainReconcile.Domain]
       do {
         existing = try await manager.domains()
@@ -126,7 +155,12 @@
             "Adding File Provider domain \(domain.identifier, privacy: .public) failed: \(error)")
         }
       }
-      for domain in result.remove {
+      if !result.remove.isEmpty, !allowsRemoval {
+        Logger.fileProvider.notice(
+          "Not removing \(result.remove.count, privacy: .public) File Provider domain(s): the server list is not from the database on disk"
+        )
+      }
+      for domain in allowsRemoval ? result.remove : [] {
         do {
           try await manager.remove(domain)
           Logger.fileProvider.info(

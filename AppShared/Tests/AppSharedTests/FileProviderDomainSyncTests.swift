@@ -2,6 +2,7 @@
 
   import FileProviderCore
   import Foundation
+  import Persistence
   import Testing
 
   @testable import AppShared
@@ -41,6 +42,15 @@
         friendlyName: name)
     }
 
+    /// A sync whose server list comes from a successful read of the real
+    /// database.
+    private func confirmed(
+      _ servers: [UUID: StoredConnection], _ domains: FakeDomains
+    ) -> FileProviderDomainSync {
+      FileProviderDomainSync(
+        trigger: {}, servers: { servers }, allowsRemoval: true, manager: domains)
+    }
+
     @Test("The display name is the friendly name, else the host, else the URL")
     func displayName() {
       let id = UUID()
@@ -55,8 +65,7 @@
     func addsDomain() async {
       let id = UUID()
       let domains = FakeDomains()
-      let sync = FileProviderDomainSync(
-        connections: { [id: self.server(id, name: "Home")] }, manager: domains)
+      let sync = confirmed([id: server(id, name: "Home")], domains)
 
       await sync.reconcile()
 
@@ -67,8 +76,7 @@
     func renamesInPlace() async {
       let id = UUID()
       let domains = FakeDomains([id.uuidString: "Old"])
-      let sync = FileProviderDomainSync(
-        connections: { [id: self.server(id, name: "New")] }, manager: domains)
+      let sync = confirmed([id: server(id, name: "New")], domains)
 
       await sync.reconcile()
 
@@ -82,17 +90,55 @@
       let domains = FakeDomains([
         kept.uuidString: "paperless.example.com", gone.uuidString: "Gone",
       ])
-      let sync = FileProviderDomainSync(
-        connections: { [kept: self.server(kept)] }, manager: domains)
+      let sync = confirmed([kept: server(kept)], domains)
 
       await sync.reconcile()
 
       #expect(await domains.calls == ["remove \(gone.uuidString)"])
     }
 
+    private struct ReadFailed: Error {}
+
+    @Test("A failed server read removes nothing, even with no servers known")
+    func failedReadRemovesNothing() async {
+      let domains = FakeDomains([UUID().uuidString: "Home"])
+      let sync = FileProviderDomainSync(
+        trigger: {}, servers: { throw ReadFailed() }, allowsRemoval: true, manager: domains)
+
+      await sync.reconcile()
+
+      #expect(await domains.calls.isEmpty)
+    }
+
+    @Test("A server list not read from the database on disk never removes a domain")
+    func unconfirmedEmptyListRemovesNothing() async {
+      let domains = FakeDomains([UUID().uuidString: "Home"])
+      let sync = FileProviderDomainSync(
+        trigger: {}, servers: { [:] }, allowsRemoval: false, manager: domains)
+
+      await sync.reconcile()
+
+      #expect(await domains.calls.isEmpty)
+    }
+
+    @Test("The stack's domain sync over an in-memory database never removes a domain")
+    func inMemoryStackRemovesNothing() async throws {
+      let database = try Database.inMemory()
+      let domains = FakeDomains([UUID().uuidString: "Home"])
+      let manager = ConnectionManager(database: database)
+      let sync = FileProviderDomainSync(
+        trigger: { _ = manager.connections },
+        servers: { [:] }, allowsRemoval: database.isOnDisk, manager: domains)
+
+      await sync.reconcile()
+
+      #expect(await domains.calls.isEmpty)
+    }
+
     @Test("Without a domain manager the sync does nothing")
     func noManagerIsInert() async {
-      let sync = FileProviderDomainSync(connections: { [:] }, manager: nil)
+      let sync = FileProviderDomainSync(
+        trigger: {}, servers: { [:] }, allowsRemoval: true, manager: nil)
       sync.start()
       await sync.reconcile()
     }
@@ -101,19 +147,21 @@
     func followsServerList() async throws {
       let model = ServerList()
       let domains = FakeDomains()
-      let sync = FileProviderDomainSync(connections: { model.servers }, manager: domains)
+      let sync = FileProviderDomainSync(
+        trigger: { _ = model.servers }, servers: { model.servers }, allowsRemoval: true,
+        manager: domains)
       sync.start()
       defer { sync.stop() }
 
       let id = UUID()
       model.servers = [id: server(id, name: "Home")]
-      try await eventually { await domains.current == [id.uuidString: "Home"] }
+      try await waitUntil { await domains.current == [id.uuidString: "Home"] }
 
       model.servers = [id: server(id, name: "Office")]
-      try await eventually { await domains.current == [id.uuidString: "Office"] }
+      try await waitUntil { await domains.current == [id.uuidString: "Office"] }
 
       model.servers = [:]
-      try await eventually { await domains.current.isEmpty }
+      try await waitUntil { await domains.current.isEmpty }
     }
   }
 

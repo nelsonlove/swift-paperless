@@ -61,15 +61,16 @@ struct StoreHarness {
 }
 
 /// Polls `condition` on the main actor until it holds. Records an issue and
-/// returns if it does not hold within five seconds.
+/// returns if it does not hold within five seconds. The condition may await,
+/// for state held by an actor.
 @MainActor
 func waitUntil(
-  _ condition: () -> Bool,
+  _ condition: () async -> Bool,
   _ comment: Comment? = nil,
   sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
   let deadline = ContinuousClock.now + .seconds(5)
-  while !condition() {
+  while await !condition() {
     if ContinuousClock.now > deadline {
       Issue.record(comment ?? "timed out waiting for condition", sourceLocation: sourceLocation)
       return
