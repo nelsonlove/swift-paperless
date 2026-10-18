@@ -62,4 +62,7 @@ INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = UIInterfaceOrientationLand
 HINGE_API_CONDITION = HINGE_API
 HINGE_API_CONDITION[sdk=iphoneos27.0] =
 HINGE_API_CONDITION[sdk=iphonesimulator27.0] =
+// Older SDKs (Xcode 26.x) lack the API too.
+HINGE_API_CONDITION[sdk=iphoneos26*] =
+HINGE_API_CONDITION[sdk=iphonesimulator26*] =
 SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) $(HINGE_API_CONDITION)
